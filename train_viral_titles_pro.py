@@ -46,7 +46,7 @@ from transformers import (
     AutoModel
 )
 from peft import LoraConfig, get_peft_model
-from trl import SFTTrainer, RewardTrainer, DPOTrainer
+from trl import SFTTrainer, RewardTrainer, DPOTrainer, SFTConfig
 
 # ─────────────────────── Config & environment ─────────────────────
 BASE_MODEL  = os.getenv("BASE_MODEL", "mistralai/Mistral-7B-Instruct-v0.3")
@@ -108,17 +108,14 @@ def stage_sft(epochs=3, bs=4):
         tok.pad_token = tok.eos_token
 
     def tok_fn(ex):
-        return tok(ex["prompt"] + ex["response"], truncation=True, max_length=MAX_LEN)
+        text = ex["prompt"] + ex["response"]
+        return {"input_ids": tok.encode(text, truncation=True, max_length=MAX_LEN)}
 
-    tds = dsdict["train"].map(tok_fn, batched=True, remove_columns=dsdict["train"].column_names)
+    # Process dataset into the format expected by SFTTrainer
+    tds = dsdict["train"].map(tok_fn, batched=False)
 
-    bnb = BitsAndBytesConfig(load_in_8bit=True, llm_int8_threshold=6.0)
-    model = AutoModelForCausalLM.from_pretrained(BASE_MODEL, quantization_config=bnb, device_map="auto")
-
-    lora = LoraConfig(r=16, lora_alpha=32, target_modules=["q_proj","v_proj"], lora_dropout=0.05, bias="none", task_type="CAUSAL_LM")
-    model = get_peft_model(model, lora)
-
-    args = TrainingArguments(
+    # Create training arguments with model initialization kwargs
+    args = SFTConfig(
         output_dir="sft_ckpt",
         num_train_epochs=epochs,
         per_device_train_batch_size=bs,
@@ -128,15 +125,28 @@ def stage_sft(epochs=3, bs=4):
         fp16=True,
         save_total_limit=2,
         report_to=[],
+        model_init_kwargs={
+            "quantization_config": BitsAndBytesConfig(load_in_8bit=True, llm_int8_threshold=6.0),
+            "device_map": "auto",
+        },
     )
 
-    # Use the most basic parameters for SFTTrainer to avoid API compatibility issues
+    # Create the trainer with the model name directly
     trainer = SFTTrainer(
-        model=model, 
-        train_dataset=tds,
+        BASE_MODEL,
         args=args,
-        tokenizer=tok,
+        train_dataset=tds,
+        dataset_text_field=None,  # We're using pre-tokenized data with input_ids
+        peft_config=LoraConfig(
+            r=16, 
+            lora_alpha=32, 
+            target_modules=["q_proj","v_proj"], 
+            lora_dropout=0.05, 
+            bias="none", 
+            task_type="CAUSAL_LM"
+        ),
     )
+    
     trainer.train()
     trainer.save_model("sft_ckpt")
     print("✅ SFT done ➜ sft_ckpt/")
