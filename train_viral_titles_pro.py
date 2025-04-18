@@ -74,7 +74,7 @@ def stage_prep():
         """
         SELECT title, description, viral_score
         FROM youtube_videos
-        WHERE viral_score >= 0.20
+        WHERE viral_score >= 0.40
           AND title IS NOT NULL AND description IS NOT NULL
         ORDER BY random()
         LIMIT 100000;
@@ -103,7 +103,17 @@ def stage_prep():
 # ───────────────────────── SFT stage ─────────────────────────────
 
 def stage_sft(epochs=3, bs=2):
+    # Print GPU information to verify GPU usage
+    if torch.cuda.is_available():
+        gpu_info = f"Using GPU: {torch.cuda.get_device_name(0)}"
+        print(f"✓ {gpu_info}")
+        print(f"✓ GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+    else:
+        print("⚠️ No GPU available, using CPU only (training will be very slow)")
+    
     dsdict = DatasetDict.load_from_disk("hf_dataset")
+    print(f"✓ Training dataset size: {len(dsdict['train']):,} examples")
+    
     tok = AutoTokenizer.from_pretrained(BASE_MODEL)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
@@ -126,6 +136,7 @@ def stage_sft(epochs=3, bs=2):
         neftune_noise_alpha=5,  # Enable NEFTune for better performance
         packing=False,  # Disable packing for more stable training
         gradient_checkpointing=True,  # Enable gradient checkpointing to save memory
+        label_names=["labels"],  # Explicitly set label_names to eliminate warning
         model_init_kwargs={
             "quantization_config": BitsAndBytesConfig(
                 load_in_8bit=True, 
