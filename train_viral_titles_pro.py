@@ -74,7 +74,7 @@ def stage_prep():
         """
         SELECT title, description, viral_score
         FROM youtube_videos
-        WHERE viral_score >= 0.20  -- Adjusted threshold to get ~1k-5k examples
+        WHERE viral_score >= 0.10  -- Adjusted threshold to get ~1k-5k examples
           AND title IS NOT NULL AND description IS NOT NULL
           AND publishedAt >= (CURRENT_DATE - INTERVAL '2 years')  -- Filter for content less than 2 years old
         ORDER BY random()
