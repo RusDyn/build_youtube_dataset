@@ -74,7 +74,7 @@ def stage_prep():
         """
         SELECT title, description, viral_score
         FROM youtube_videos
-        WHERE viral_score >= 0.40
+        WHERE viral_score >= 0.30
           AND title IS NOT NULL AND description IS NOT NULL
         ORDER BY random()
         LIMIT 100000;
