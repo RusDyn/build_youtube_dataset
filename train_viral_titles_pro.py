@@ -70,15 +70,89 @@ if not DB_PATH.exists():
 
 def stage_prep():
     con = duckdb.connect(DB_PATH)
+    
+    # Run diagnostic queries to understand data distribution
+    print("📊 Data Distribution Analysis:")
+    
+    # Check total count
+    total_count = con.execute("SELECT COUNT(*) FROM youtube_videos").fetchone()[0]
+    print(f"  Total videos: {total_count:,}")
+    
+    # Check viral score distribution
+    viral_score_dist = con.execute("""
+        SELECT 
+            COUNT(*) FILTER (WHERE viral_score >= 0.40) as vs_40_plus,
+            COUNT(*) FILTER (WHERE viral_score >= 0.30) as vs_30_plus,
+            COUNT(*) FILTER (WHERE viral_score >= 0.20) as vs_20_plus,
+            COUNT(*) FILTER (WHERE viral_score >= 0.10) as vs_10_plus,
+            COUNT(*) FILTER (WHERE viral_score >= 0.05) as vs_05_plus
+        FROM youtube_videos
+    """).fetchone()
+    
+    print(f"  Viral score distribution:")
+    print(f"    ≥ 0.40: {viral_score_dist[0]:,}")
+    print(f"    ≥ 0.30: {viral_score_dist[1]:,}")
+    print(f"    ≥ 0.20: {viral_score_dist[2]:,}")
+    print(f"    ≥ 0.10: {viral_score_dist[3]:,}")
+    print(f"    ≥ 0.05: {viral_score_dist[4]:,}")
+    
+    # Check date distribution
+    date_dist = con.execute("""
+        SELECT 
+            COUNT(*) FILTER (WHERE publishedAt >= (CURRENT_DATE - INTERVAL '1 years')) as last_1yr,
+            COUNT(*) FILTER (WHERE publishedAt >= (CURRENT_DATE - INTERVAL '3 years')) as last_3yr,
+            COUNT(*) FILTER (WHERE publishedAt >= (CURRENT_DATE - INTERVAL '5 years')) as last_5yr,
+            COUNT(*) FILTER (WHERE publishedAt IS NOT NULL) as with_date,
+            COUNT(*) FILTER (WHERE publishedAt IS NULL) as without_date
+        FROM youtube_videos
+    """).fetchone()
+    
+    print(f"  Date distribution:")
+    print(f"    Last 1 year: {date_dist[0]:,}")
+    print(f"    Last 3 years: {date_dist[1]:,}")
+    print(f"    Last 5 years: {date_dist[2]:,}")
+    print(f"    With date: {date_dist[3]:,}")
+    print(f"    Without date: {date_dist[4]:,}")
+    
+    # Analyze combined filters
+    combined_counts = con.execute("""
+        SELECT
+            COUNT(*) FILTER (
+                WHERE viral_score >= 0.10 
+                AND title IS NOT NULL AND description IS NOT NULL
+                AND publishedAt >= (CURRENT_DATE - INTERVAL '5 years')
+            ) as current_filter,
+            COUNT(*) FILTER (
+                WHERE viral_score >= 0.05
+                AND title IS NOT NULL AND description IS NOT NULL
+                AND publishedAt >= (CURRENT_DATE - INTERVAL '10 years')
+            ) as relaxed_filter
+        FROM youtube_videos
+    """).fetchone()
+    
+    print(f"  Combined filters:")
+    print(f"    Current filter (VS≥0.10, 5yr): {combined_counts[0]:,}")
+    print(f"    Relaxed filter (VS≥0.05, 10yr): {combined_counts[1]:,}")
+    
+    # Modified main query with relaxed filters if needed
+    viral_threshold = 0.10
+    years_threshold = 5
+    
+    # If the current filter yields < 1000 results, automatically use more relaxed filter
+    if combined_counts[0] < 1000 and combined_counts[1] >= 1000:
+        viral_threshold = 0.05
+        years_threshold = 10
+        print(f"⚠️ Automatically using relaxed filter to get more examples")
+    
     df = con.execute(
-        """
+        f"""
         SELECT title, description, viral_score
         FROM youtube_videos
-        WHERE viral_score >= 0.10  -- Adjusted threshold to get ~1k-5k examples
+        WHERE viral_score >= {viral_threshold}  -- Viral score threshold
           AND title IS NOT NULL AND description IS NOT NULL
-          AND publishedAt >= (CURRENT_DATE - INTERVAL '5 years')  -- Filter for content less than 5 years old
+          AND publishedAt >= (CURRENT_DATE - INTERVAL '{years_threshold} years')
         ORDER BY random()
-        LIMIT 10000;  -- Added limit to ensure dataset isn't too large
+        LIMIT 10000;
         """
     ).df()
     con.close()
