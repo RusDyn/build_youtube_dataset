@@ -11,3 +11,4 @@ bitsandbytes>=0.41.1
 torch>=2.0.0
 safetensors>=0.4.0
 tiktoken>=0.5.0
+boto3>=1.28.0
