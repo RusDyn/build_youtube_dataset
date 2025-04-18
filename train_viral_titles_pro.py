@@ -144,7 +144,6 @@ def stage_sft(epochs=3, bs=4):
         BASE_MODEL,
         args=args,
         train_dataset=dsdict["train"],
-        eval_dataset=dsdict["validation"],
         processing_class=tok,
         peft_config=peft_config,
         formatting_func=formatting_prompts_func,
