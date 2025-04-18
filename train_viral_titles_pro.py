@@ -131,20 +131,22 @@ def stage_sft(epochs=3, bs=4):
         },
     )
 
-    # Create the trainer with the model name directly
+    # Define PEFT config
+    peft_config = LoraConfig(
+        r=16, 
+        lora_alpha=32, 
+        target_modules=["q_proj","v_proj"], 
+        lora_dropout=0.05, 
+        bias="none", 
+        task_type="CAUSAL_LM"
+    )
+
+    # Create the trainer with the minimal required arguments
     trainer = SFTTrainer(
         BASE_MODEL,
         args=args,
         train_dataset=tds,
-        dataset_text_field=None,  # We're using pre-tokenized data with input_ids
-        peft_config=LoraConfig(
-            r=16, 
-            lora_alpha=32, 
-            target_modules=["q_proj","v_proj"], 
-            lora_dropout=0.05, 
-            bias="none", 
-            task_type="CAUSAL_LM"
-        ),
+        peft_config=peft_config,
     )
     
     trainer.train()
