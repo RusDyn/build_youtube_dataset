@@ -130,19 +130,11 @@ def stage_sft(epochs=3, bs=4):
         report_to=[],
     )
 
-    # Prepare dataset in SFT format with input_ids only
-    train_dataset = []
-    for item in dsdict["train"]:
-        train_dataset.append({
-            "input_ids": tok(item["prompt"] + item["response"], truncation=True, max_length=MAX_LEN)["input_ids"]
-        })
-
+    # Use the most basic parameters for SFTTrainer to avoid API compatibility issues
     trainer = SFTTrainer(
         model=model, 
+        train_dataset=tds,
         args=args,
-        train_dataset=train_dataset,
-        dataset_text_field=None,  # We're passing pre-tokenized data
-        peft_config=lora,
         tokenizer=tok,
     )
     trainer.train()
