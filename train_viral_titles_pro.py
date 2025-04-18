@@ -74,8 +74,9 @@ def stage_prep():
         """
         SELECT title, description, viral_score
         FROM youtube_videos
-        WHERE viral_score >= 0.201  -- Adjusted threshold to get ~1k-5k examples
+        WHERE viral_score >= 0.20  -- Adjusted threshold to get ~1k-5k examples
           AND title IS NOT NULL AND description IS NOT NULL
+          AND upload_date >= DATE_SUB(CURRENT_DATE, INTERVAL 1 YEAR)  -- Filter for content less than 1 year old
         ORDER BY random()
         LIMIT 10000;  -- Added limit to ensure dataset isn't too large
         """
