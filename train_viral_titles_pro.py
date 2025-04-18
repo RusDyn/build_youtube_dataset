@@ -123,6 +123,7 @@ def stage_sft(epochs=3, bs=4):
         report_to=[],
         max_length=MAX_LEN,
         neftune_noise_alpha=5,  # Enable NEFTune for better performance
+        packing=False,  # Disable packing for more stable training
         model_init_kwargs={
             "quantization_config": BitsAndBytesConfig(load_in_8bit=True, llm_int8_threshold=6.0),
             "device_map": "auto",
@@ -147,7 +148,6 @@ def stage_sft(epochs=3, bs=4):
         processing_class=tok,
         peft_config=peft_config,
         formatting_func=formatting_prompts_func,
-        packing=False,  # Disable packing for more stable training
     )
     
     trainer.train()
