@@ -47,6 +47,7 @@ from transformers import (
 )
 from peft import LoraConfig, get_peft_model
 from trl import SFTTrainer, RewardTrainer, DPOTrainer, SFTConfig
+import torch
 
 # ─────────────────────── Config & environment ─────────────────────
 BASE_MODEL  = os.getenv("BASE_MODEL", "mistralai/Mistral-7B-Instruct-v0.3")
@@ -101,7 +102,7 @@ def stage_prep():
 
 # ───────────────────────── SFT stage ─────────────────────────────
 
-def stage_sft(epochs=3, bs=4):
+def stage_sft(epochs=3, bs=2):
     dsdict = DatasetDict.load_from_disk("hf_dataset")
     tok = AutoTokenizer.from_pretrained(BASE_MODEL)
     if tok.pad_token is None:
@@ -110,12 +111,12 @@ def stage_sft(epochs=3, bs=4):
     def formatting_prompts_func(example):
         return example["prompt"] + example["response"]
 
-    # Create training configuration using SFTConfig
+    # Create training configuration using SFTConfig with reduced memory footprint
     args = SFTConfig(
         output_dir="sft_ckpt",
         num_train_epochs=epochs,
-        per_device_train_batch_size=bs,
-        gradient_accumulation_steps=8,
+        per_device_train_batch_size=bs,  # Reduced batch size
+        gradient_accumulation_steps=16,  # Increased gradient accumulation
         learning_rate=2e-4,
         logging_steps=50,
         fp16=True,
@@ -124,19 +125,28 @@ def stage_sft(epochs=3, bs=4):
         max_length=MAX_LEN,
         neftune_noise_alpha=5,  # Enable NEFTune for better performance
         packing=False,  # Disable packing for more stable training
+        gradient_checkpointing=True,  # Enable gradient checkpointing to save memory
         model_init_kwargs={
-            "quantization_config": BitsAndBytesConfig(load_in_8bit=True, llm_int8_threshold=6.0),
+            "quantization_config": BitsAndBytesConfig(
+                load_in_8bit=True, 
+                llm_int8_threshold=6.0,
+                bnb_4bit_compute_dtype=torch.float16  # Add compute dtype for better memory efficiency
+            ),
             "device_map": "auto",
+            "torch_dtype": torch.float16,  # Use fp16 for base model weights
         },
     )
 
-    # Define PEFT config
+    # Set PyTorch to allow memory expansion for fragmentation reduction
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
+    # Define PEFT config with fewer target modules
     peft_config = LoraConfig(
-        r=16, 
-        lora_alpha=32, 
-        target_modules=["q_proj","v_proj","k_proj","o_proj"], 
-        lora_dropout=0.05, 
-        bias="none", 
+        r=8,  # Reduced rank
+        lora_alpha=16,  # Reduced alpha
+        target_modules=["q_proj","v_proj"],  # Reduced target modules
+        lora_dropout=0.05,
+        bias="none",
         task_type="CAUSAL_LM"
     )
 
