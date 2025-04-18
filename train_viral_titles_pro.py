@@ -110,7 +110,7 @@ def stage_sft(epochs=3, bs=4):
     def formatting_prompts_func(example):
         return example["prompt"] + example["response"]
 
-    # Create training arguments with model initialization kwargs
+    # Create training configuration using SFTConfig
     args = SFTConfig(
         output_dir="sft_ckpt",
         num_train_epochs=epochs,
@@ -122,6 +122,7 @@ def stage_sft(epochs=3, bs=4):
         save_total_limit=2,
         report_to=[],
         max_length=MAX_LEN,
+        neftune_noise_alpha=5,  # Enable NEFTune for better performance
         model_init_kwargs={
             "quantization_config": BitsAndBytesConfig(load_in_8bit=True, llm_int8_threshold=6.0),
             "device_map": "auto",
@@ -132,7 +133,7 @@ def stage_sft(epochs=3, bs=4):
     peft_config = LoraConfig(
         r=16, 
         lora_alpha=32, 
-        target_modules=["q_proj","v_proj"], 
+        target_modules=["q_proj","v_proj","k_proj","o_proj"], 
         lora_dropout=0.05, 
         bias="none", 
         task_type="CAUSAL_LM"
@@ -143,9 +144,11 @@ def stage_sft(epochs=3, bs=4):
         BASE_MODEL,
         args=args,
         train_dataset=dsdict["train"],
-        tokenizer=tok,
+        eval_dataset=dsdict["validation"],
+        processing_class=tok,
         peft_config=peft_config,
         formatting_func=formatting_prompts_func,
+        packing=False,  # Disable packing for more stable training
     )
     
     trainer.train()
