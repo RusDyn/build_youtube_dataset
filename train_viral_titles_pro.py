@@ -74,10 +74,10 @@ def stage_prep():
         """
         SELECT title, description, viral_score
         FROM youtube_videos
-        WHERE viral_score >= 0.21
+        WHERE viral_score >= 0.205  -- Adjusted threshold to get ~1k-5k examples
           AND title IS NOT NULL AND description IS NOT NULL
         ORDER BY random()
-        LIMIT 100000;
+        LIMIT 10000;  -- Added limit to ensure dataset isn't too large
         """
     ).df()
     con.close()
