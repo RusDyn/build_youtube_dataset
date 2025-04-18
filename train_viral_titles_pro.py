@@ -76,7 +76,7 @@ def stage_prep():
         FROM youtube_videos
         WHERE viral_score >= 0.10  -- Adjusted threshold to get ~1k-5k examples
           AND title IS NOT NULL AND description IS NOT NULL
-          AND publishedAt >= (CURRENT_DATE - INTERVAL '2 years')  -- Filter for content less than 2 years old
+          AND publishedAt >= (CURRENT_DATE - INTERVAL '3 years')  -- Filter for content less than 2 years old
         ORDER BY random()
         LIMIT 10000;  -- Added limit to ensure dataset isn't too large
         """
