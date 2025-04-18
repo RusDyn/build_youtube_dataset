@@ -107,12 +107,8 @@ def stage_sft(epochs=3, bs=4):
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
 
-    def tok_fn(ex):
-        text = ex["prompt"] + ex["response"]
-        return {"input_ids": tok.encode(text, truncation=True, max_length=MAX_LEN)}
-
-    # Process dataset into the format expected by SFTTrainer
-    tds = dsdict["train"].map(tok_fn, batched=False)
+    def formatting_prompts_func(example):
+        return example["prompt"] + example["response"]
 
     # Create training arguments with model initialization kwargs
     args = SFTConfig(
@@ -125,6 +121,7 @@ def stage_sft(epochs=3, bs=4):
         fp16=True,
         save_total_limit=2,
         report_to=[],
+        max_length=MAX_LEN,
         model_init_kwargs={
             "quantization_config": BitsAndBytesConfig(load_in_8bit=True, llm_int8_threshold=6.0),
             "device_map": "auto",
@@ -141,12 +138,14 @@ def stage_sft(epochs=3, bs=4):
         task_type="CAUSAL_LM"
     )
 
-    # Create the trainer with the minimal required arguments
+    # Create the trainer with explicit tokenizer and formatting function
     trainer = SFTTrainer(
         BASE_MODEL,
         args=args,
-        train_dataset=tds,
+        train_dataset=dsdict["train"],
+        tokenizer=tok,
         peft_config=peft_config,
+        formatting_func=formatting_prompts_func,
     )
     
     trainer.train()
