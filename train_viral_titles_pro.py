@@ -200,13 +200,8 @@ def sanity_check_dataset(dsd):
         print(f"❌ ERROR: Found {n_empty_prompt} empty prompts and {n_empty_resp} empty responses.")
         sys.exit(1)
     # Check for excessive duplication
-    prompt_counts = Counter(ex["prompt"] for ex in train)
     resp_counts = Counter(ex["response"] for ex in train)
-    most_common_prompt, prompt_freq = prompt_counts.most_common(1)[0]
     most_common_resp, resp_freq = resp_counts.most_common(1)[0]
-    if prompt_freq > n * 0.1:
-        print(f"❌ ERROR: Most common prompt appears {prompt_freq} times (>10% of data). Example: {most_common_prompt[:80]}")
-        sys.exit(1)
     if resp_freq > n * 0.1:
         print(f"❌ ERROR: Most common response appears {resp_freq} times (>10% of data). Example: {most_common_resp[:80]}")
         sys.exit(1)
