@@ -61,6 +61,8 @@ from scipy.stats import spearmanr
 from transformers import Trainer, TrainingArguments
 # Import tqdm for progress bar configuration
 import tqdm.auto as tqdm
+# Import threading for RLock
+import threading
 
 
 # ─────────────── Config & Environment ───────────────
@@ -78,7 +80,7 @@ if sys.platform == "win32":
         print(f"Warning: Could not enable ANSI colors in Windows console: {e}")
 
 # Configure tqdm for proper display in Windows environment
-tqdm.tqdm.set_lock(tqdm.RLock())  # For managing multiple concurrent bars
+tqdm.tqdm.set_lock(threading.RLock())  # For managing multiple concurrent bars
 os.environ["TOKENIZERS_PARALLELISM"] = "false"  # Avoid tokenizer warnings
 # Force tqdm to not use carriage returns for Windows compatibility
 tqdm.tqdm.monitor_interval = 0  # Disable monitor thread that can cause issues
