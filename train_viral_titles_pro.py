@@ -166,10 +166,18 @@ def stage_prep():
           AND title IS NOT NULL AND description IS NOT NULL
           AND {date_condition}
         ORDER BY random()
-        LIMIT 100000;
+        LIMIT 200000;
     """).df()
     con.close()
     print(f"✓ loaded {len(df):,} rows for training (threshold={viral_threshold})")
+    # Sanity check for duplicates
+    n_dupes = df.duplicated(subset=["title", "description"]).sum()
+    if n_dupes > 0:
+        print(f"❌ WARNING: Found {n_dupes} duplicate rows (by title+description). Dropping duplicates.")
+        df = df.drop_duplicates(subset=["title", "description"]).reset_index(drop=True)
+        print(f"  After dropping duplicates: {len(df):,} rows remain.")
+    else:
+        print("✓ No duplicate rows found (by title+description).")
     # build prompts
     data = []
     for _, r in df.iterrows():
@@ -465,7 +473,7 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
     
     # Evaluate on test set
     from transformers import pipeline
-    pipe = pipeline("text-classification", model=f"{target}_reg_ckpt", processing_class=tok, device=0 if torch.cuda.is_available() else -1)
+    pipe = pipeline("text-classification", model=f"{target}_reg_ckpt", tokenizer=tok, device=0 if torch.cuda.is_available() else -1)
     
     # Get predictions
     test_texts = test_ds["text"]
