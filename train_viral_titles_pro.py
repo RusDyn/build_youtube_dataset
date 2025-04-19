@@ -46,7 +46,7 @@ from transformers import (
     AutoModel
 )
 from peft import LoraConfig, get_peft_model
-from trl import SFTTrainer, RewardTrainer, DPOTrainer, SFTConfig
+from trl import SFTTrainer, RewardTrainer, DPOTrainer, SFTConfig, RewardConfig
 import torch
 
 # ─────────────────────── Config & environment ─────────────────────
@@ -278,13 +278,16 @@ def stage_reward(epochs=2):
 
     model = AutoModel.from_pretrained(base_rm)
 
-    args = TrainingArguments(
+    # Use RewardConfig instead of TrainingArguments
+    args = RewardConfig(
         output_dir="rm_ckpt",
         num_train_epochs=epochs,
         per_device_train_batch_size=32,
         learning_rate=1e-5,
         logging_steps=100,
         report_to=[],
+        disable_dropout=True,  # Required by RewardTrainer
+        max_length=MAX_LEN,    # Required by RewardTrainer
     )
 
     trainer = RewardTrainer(
