@@ -120,29 +120,30 @@ def stage_prep():
             COUNT(*) FILTER (
                 WHERE viral_score >= 0.10 
                 AND title IS NOT NULL AND description IS NOT NULL
-                AND publishedAt >= (CURRENT_DATE - INTERVAL '5 years')
+                AND (publishedAt >= (CURRENT_DATE - INTERVAL '5 years') OR publishedAt IS NULL)
             ) as current_filter,
             COUNT(*) FILTER (
                 WHERE viral_score >= 0.05
                 AND title IS NOT NULL AND description IS NOT NULL
-                AND publishedAt >= (CURRENT_DATE - INTERVAL '10 years')
             ) as relaxed_filter
         FROM youtube_videos
     """).fetchone()
     
     print(f"  Combined filters:")
-    print(f"    Current filter (VS≥0.10, 5yr): {combined_counts[0]:,}")
-    print(f"    Relaxed filter (VS≥0.05, 10yr): {combined_counts[1]:,}")
+    print(f"    Current filter (VS≥0.10, with date handling): {combined_counts[0]:,}")
+    print(f"    Relaxed filter (VS≥0.05, no date filter): {combined_counts[1]:,}")
     
     # Modified main query with relaxed filters if needed
     viral_threshold = 0.10
-    years_threshold = 5
+    include_null_dates = True
     
     # If the current filter yields < 1000 results, automatically use more relaxed filter
     if combined_counts[0] < 1000 and combined_counts[1] >= 1000:
         viral_threshold = 0.05
-        years_threshold = 10
-        print(f"⚠️ Automatically using relaxed filter to get more examples")
+        print(f"⚠️ Automatically using relaxed viral threshold to get more examples")
+    
+    # Build the date filter condition
+    date_condition = "(publishedAt >= (CURRENT_DATE - INTERVAL '5 years') OR publishedAt IS NULL)" if include_null_dates else "publishedAt >= (CURRENT_DATE - INTERVAL '5 years')"
     
     df = con.execute(
         f"""
@@ -150,7 +151,7 @@ def stage_prep():
         FROM youtube_videos
         WHERE viral_score >= {viral_threshold}  -- Viral score threshold
           AND title IS NOT NULL AND description IS NOT NULL
-          AND publishedAt >= (CURRENT_DATE - INTERVAL '{years_threshold} years')
+          AND {date_condition}
         ORDER BY random()
         LIMIT 10000;
         """
