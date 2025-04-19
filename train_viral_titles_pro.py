@@ -147,7 +147,7 @@ def stage_prep():
     print(f"    Relaxed filter (VS≥0.05, no date filter): {combined_counts[1]:,}")
     
     # Modified main query with relaxed filters if needed
-    viral_threshold = 0.205
+    viral_threshold = 0.1
     include_null_dates = True
     
     # If the current filter yields < 1000 results, automatically use more relaxed filter
@@ -166,7 +166,7 @@ def stage_prep():
           AND title IS NOT NULL AND description IS NOT NULL
           AND {date_condition}
         ORDER BY random()
-        LIMIT 10000;
+        LIMIT 100000;
     """).df()
     con.close()
     print(f"✓ loaded {len(df):,} rows for training (threshold={viral_threshold})")
@@ -277,7 +277,7 @@ def stage_sft(epochs=3, bs=4):
     response_template = "### Response\nTitle:"
 
     # Create the collator
-    collator = DataCollatorForCompletionOnlyLM(response_template, tokenizer=tok)
+    collator = DataCollatorForCompletionOnlyLM(response_template, processing_class=tok)
 
     # Pass the collator to SFTTrainer
     trainer = SFTTrainer(
@@ -444,7 +444,7 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
         fp16=True,
         save_strategy="epoch",
         eval_strategy="epoch",
-        
+
         load_best_model_at_end=True,
         report_to=[],
     )
@@ -455,7 +455,7 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
         args=training_args,
         train_dataset=tokenized_train,
         eval_dataset=tokenized_test,
-        tokenizer=tok,
+        processing_class=tok,
     )
     
     # Train the model
@@ -465,7 +465,7 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
     
     # Evaluate on test set
     from transformers import pipeline
-    pipe = pipeline("text-classification", model=f"{target}_reg_ckpt", tokenizer=tok, device=0 if torch.cuda.is_available() else -1)
+    pipe = pipeline("text-classification", model=f"{target}_reg_ckpt", processing_class=tok, device=0 if torch.cuda.is_available() else -1)
     
     # Get predictions
     test_texts = test_ds["text"]
