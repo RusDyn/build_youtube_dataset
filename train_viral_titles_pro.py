@@ -404,7 +404,7 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
     )
 
     def fmt(ex):
-        return ex[target]
+        return {"text": ex[target], "labels": ex["score"]}
 
     cfg = SFTConfig(
         output_dir=f"{target}_reg_ckpt",
@@ -414,6 +414,7 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
         fp16=True,
         max_length=MAX_LEN,
         report_to=[],
+        dataset_text_field="text",
     )
 
     trainer = SFTTrainer(
