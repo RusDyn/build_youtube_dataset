@@ -57,6 +57,9 @@ import boto3
 from collections import Counter
 from sklearn.metrics import mean_squared_error
 from scipy.stats import spearmanr
+# Import Trainer directly from transformers
+from transformers import Trainer, TrainingArguments
+
 
 # ─────────────── Config & Environment ───────────────
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
@@ -430,9 +433,7 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
     tokenized_train = train_ds.map(preprocess_function, batched=True)
     tokenized_test = test_ds.map(preprocess_function, batched=True)
     
-    # Import Trainer directly from transformers
-    from transformers import Trainer, TrainingArguments
-    
+
     # Set up training arguments
     training_args = TrainingArguments(
         output_dir=f"{target}_reg_ckpt",
@@ -442,7 +443,8 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
         learning_rate=2e-5,
         fp16=True,
         save_strategy="epoch",
-        evaluation_strategy="epoch",
+        eval_strategy="epoch",
+        
         load_best_model_at_end=True,
         report_to=[],
     )
