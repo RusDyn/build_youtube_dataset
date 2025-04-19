@@ -321,9 +321,23 @@ def stage_reward(epochs=2):
 # ─────────────────────── RLHF (DPO) stage ────────────────────────
 
 def stage_rlhf(epochs=3):
+    # Create offload directory if it doesn't exist
+    offload_dir = pathlib.Path("offload_dir")
+    offload_dir.mkdir(exist_ok=True)
+    
+    # Load tokenizer and models with proper offloading
     tok = AutoTokenizer.from_pretrained("sft_ckpt")
-    policy = AutoModelForCausalLM.from_pretrained("sft_ckpt", device_map="auto")
-    reward = AutoModel.from_pretrained("rm_ckpt")
+    
+    # Configure model loading with offloading
+    model_kwargs = {
+        "device_map": "auto",
+        "offload_folder": str(offload_dir),
+        "offload_state_dict": True,
+        "torch_dtype": torch.float16,
+    }
+    
+    policy = AutoModelForCausalLM.from_pretrained("sft_ckpt", **model_kwargs)
+    reward = AutoModel.from_pretrained("rm_ckpt", **model_kwargs)
 
     dsdict = DatasetDict.load_from_disk("hf_dataset")
 
@@ -346,6 +360,9 @@ def stage_rlhf(epochs=3):
         logging_steps=50,
         fp16=True,
         report_to=[],
+        # Add memory optimization settings
+        gradient_checkpointing=True,
+        optim="adamw_torch_fused",
     )
 
     trainer = DPOTrainer(
