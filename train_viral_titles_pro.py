@@ -404,7 +404,11 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
     )
 
     def fmt(ex):
-        return {"text": ex[target], "labels": ex["score"]}
+        text = ex[target]
+        if not isinstance(text, str):
+            print(f"Non-string found in {target}: {text} (type: {type(text)})")
+            text = str(text) if text is not None else ""
+        return {"text": text, "labels": float(ex["score"])}
 
     cfg = SFTConfig(
         output_dir=f"{target}_reg_ckpt",
