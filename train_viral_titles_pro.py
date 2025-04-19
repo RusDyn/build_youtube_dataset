@@ -186,8 +186,7 @@ def stage_prep():
         WHERE viral_score >= {viral_threshold}
           AND title IS NOT NULL AND description IS NOT NULL
           AND {date_condition}
-        ORDER BY random()
-        LIMIT 400000;
+        ORDER BY random();
     """).df()
     con.close()
     print(f"✓ loaded {len(df):,} rows for training (threshold={viral_threshold})")
@@ -477,7 +476,7 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
         report_to=[],
         # Configure progress bar behavior
         disable_tqdm=False,     # Don't disable tqdm
-        logging_steps=20,       # Control update frequency
+        logging_steps=100,       # Control update frequency
         logging_first_step=True, # Log the first step
         logging_nan_inf_filter=True, # Filter NaN/inf loss values
         log_level="error",      # Reduce terminal output verbosity
