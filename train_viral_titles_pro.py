@@ -56,7 +56,7 @@ BASE_MODEL  = os.getenv("BASE_MODEL", "mistralai/Mistral-7B-Instruct-v0.3")
 DB_PATH     = pathlib.Path(os.getenv("DB_PATH", "youtube_dataset.duckdb"))
 S3_BUCKET   = os.getenv("S3_BUCKET")
 S3_KEY      = os.getenv("S3_KEY")
-MAX_LEN     = 64
+MAX_LEN     = 32
 SEED        = 42
 random.seed(SEED)
 
@@ -336,7 +336,7 @@ def stage_rlhf(epochs=3):
         "offload_folder": str(offload_dir),
         "offload_state_dict": True,
         "torch_dtype": torch.float16,
-        "quantization_config": BitsAndBytesConfig(load_in_8bit=True),
+        "quantization_config": BitsAndBytesConfig(load_in_4bit=True),
     }
     
     policy = AutoModelForCausalLM.from_pretrained("sft_ckpt", **model_kwargs)
