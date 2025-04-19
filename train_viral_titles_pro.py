@@ -393,50 +393,96 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
     """
     print(f"▶️ Training regression model for: {target}")
     dsd = DatasetDict.load_from_disk("hf_dataset")
-    train_texts = dsd["train"][target]
-    train_scores = dsd["train"]["score"]
-    test_texts = dsd["test"][target]
-    test_scores = dsd["test"]["score"]
-
-    tok = AutoTokenizer.from_pretrained(model_ckpt)
-    model = AutoModelForSequenceClassification.from_pretrained(
-        model_ckpt, num_labels=1, problem_type="regression"
-    )
-
-    def fmt(ex):
-        text = ex[target]
+    
+    # Extract the first 5 examples to check their contents
+    first_examples = list(dsd["train"].select(range(5)))
+    print(f"First examples ({target}):")
+    for i, ex in enumerate(first_examples):
+        print(f"Example {i}: {target}='{ex[target]}', score={ex['score']} (type: {type(ex[target])})")
+    
+    # Prepare a clean dataset with only text and labels fields
+    def prepare_regression_example(example):
+        text = example[target]
         if not isinstance(text, str):
-            print(f"Non-string found in {target}: {text} (type: {type(text)})")
             text = str(text) if text is not None else ""
-        return {"text": text, "labels": float(ex["score"])}
-
-    cfg = SFTConfig(
+        return {"text": text, "labels": float(example["score"])}
+    
+    train_ds = dsd["train"].map(prepare_regression_example)
+    test_ds = dsd["test"].map(prepare_regression_example)
+    
+    # Configure the tokenizer
+    tok = AutoTokenizer.from_pretrained(model_ckpt)
+    if tok.pad_token is None:
+        tok.pad_token = tok.eos_token
+    
+    # Create the model
+    model = AutoModelForSequenceClassification.from_pretrained(
+        model_ckpt, 
+        num_labels=1, 
+        problem_type="regression"
+    )
+    
+    # Define the preprocessing function
+    def preprocess_function(examples):
+        return tok(examples["text"], padding="max_length", truncation=True, max_length=MAX_LEN)
+    
+    # Tokenize the datasets
+    tokenized_train = train_ds.map(preprocess_function, batched=True)
+    tokenized_test = test_ds.map(preprocess_function, batched=True)
+    
+    # Import Trainer directly from transformers
+    from transformers import Trainer, TrainingArguments
+    
+    # Set up training arguments
+    training_args = TrainingArguments(
         output_dir=f"{target}_reg_ckpt",
-        per_device_train_batch_size=bs,
         num_train_epochs=epochs,
+        per_device_train_batch_size=bs,
+        per_device_eval_batch_size=bs,
         learning_rate=2e-5,
         fp16=True,
-        max_length=MAX_LEN,
+        save_strategy="epoch",
+        evaluation_strategy="epoch",
+        load_best_model_at_end=True,
         report_to=[],
-        dataset_text_field="text",
     )
-
-    trainer = SFTTrainer(
+    
+    # Create Trainer
+    trainer = Trainer(
         model=model,
-        args=cfg,
-        train_dataset=dsd["train"],
-        eval_dataset=dsd["test"],
-        formatting_func=fmt,
-        processing_class=tok,
+        args=training_args,
+        train_dataset=tokenized_train,
+        eval_dataset=tokenized_test,
+        tokenizer=tok,
     )
+    
+    # Train the model
     trainer.train()
     trainer.save_model(f"{target}_reg_ckpt")
     print(f"✅ Regression model saved ➜ {target}_reg_ckpt/")
-
+    
     # Evaluate on test set
-    preds = trainer.predict(dsd["test"]).predictions.flatten()
-    mse = mean_squared_error(test_scores, preds)
-    spearman = spearmanr(test_scores, preds).correlation
+    from transformers import pipeline
+    pipe = pipeline("text-classification", model=f"{target}_reg_ckpt", tokenizer=tok, device=0 if torch.cuda.is_available() else -1)
+    
+    # Get predictions
+    test_texts = test_ds["text"]
+    test_scores = test_ds["labels"]
+    predictions = []
+    
+    # Process in batches to avoid memory issues
+    batch_size = 32
+    for i in range(0, len(test_texts), batch_size):
+        batch_texts = test_texts[i:i+batch_size]
+        batch_preds = pipe(list(batch_texts))
+        predictions.extend([float(pred["score"]) for pred in batch_preds])
+    
+    # Calculate metrics
+    preds_array = torch.tensor(predictions).numpy()
+    scores_array = torch.tensor(test_scores).numpy()
+    
+    mse = mean_squared_error(scores_array, preds_array)
+    spearman = spearmanr(scores_array, preds_array).correlation
     print(f"Test MSE: {mse:.4f} | Spearman: {spearman:.4f}")
 
 # ─────────────────────────── CLI ──────────────────────────
