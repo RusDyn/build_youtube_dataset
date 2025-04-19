@@ -259,7 +259,12 @@ def stage_reward(epochs=2):
     tok = AutoTokenizer.from_pretrained(base_rm)
 
     def proc(ex):
-        return tok(ex["prompt"] + ex["response"], truncation=True, max_length=MAX_LEN)
+        # Format the dataset for reward modeling
+        return {
+            "input_ids": tok(ex["prompt"] + ex["response"], truncation=True, max_length=MAX_LEN)["input_ids"],
+            "attention_mask": tok(ex["prompt"] + ex["response"], truncation=True, max_length=MAX_LEN)["attention_mask"],
+            "labels": ex["score"]  # Use score as the target for regression
+        }
 
     tds = dsdict["train"].map(proc, batched=True, remove_columns=dsdict["train"].column_names)
 
@@ -274,10 +279,12 @@ def stage_reward(epochs=2):
         report_to=[],
     )
 
-    trainer = RewardTrainer(model=model, 
-        processing_class=tok, 
-        train_dataset=tds, 
-        reward_column="score", args=args)
+    trainer = RewardTrainer(
+        model=model,
+        args=args,
+        train_dataset=tds,
+        processing_class=tok,
+    )
     trainer.train()
     trainer.save_model("rm_ckpt")
     print("✅ Reward model ➜ rm_ckpt/")
