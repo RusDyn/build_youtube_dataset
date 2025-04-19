@@ -59,11 +59,30 @@ from sklearn.metrics import mean_squared_error
 from scipy.stats import spearmanr
 # Import Trainer directly from transformers
 from transformers import Trainer, TrainingArguments
+# Import tqdm for progress bar configuration
+import tqdm.auto as tqdm
 
 
 # ─────────────── Config & Environment ───────────────
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["ACCELERATE_MIXED_PRECISION"] = "no"
+
+# Windows-specific console configuration for proper ANSI handling
+if sys.platform == "win32":
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        # Enable ANSI escape sequence processing
+        kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
+    except Exception as e:
+        print(f"Warning: Could not enable ANSI colors in Windows console: {e}")
+
+# Configure tqdm for proper display in Windows environment
+tqdm.tqdm.set_lock(tqdm.RLock())  # For managing multiple concurrent bars
+os.environ["TOKENIZERS_PARALLELISM"] = "false"  # Avoid tokenizer warnings
+# Force tqdm to not use carriage returns for Windows compatibility
+tqdm.tqdm.monitor_interval = 0  # Disable monitor thread that can cause issues
+
 BASE_MODEL = os.getenv("BASE_MODEL", "mistralai/Mistral-7B-Instruct-v0.3")
 DB_PATH    = pathlib.Path(os.getenv("DB_PATH", "youtube_dataset.duckdb"))
 S3_BUCKET  = os.getenv("S3_BUCKET")
@@ -166,7 +185,7 @@ def stage_prep():
           AND title IS NOT NULL AND description IS NOT NULL
           AND {date_condition}
         ORDER BY random()
-        LIMIT 200000;
+        LIMIT 400000;
     """).df()
     con.close()
     print(f"✓ loaded {len(df):,} rows for training (threshold={viral_threshold})")
@@ -452,9 +471,15 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
         fp16=True,
         save_strategy="epoch",
         eval_strategy="epoch",
-
         load_best_model_at_end=True,
         report_to=[],
+        # Configure progress bar behavior
+        disable_tqdm=False,     # Don't disable tqdm
+        logging_steps=20,       # Control update frequency
+        logging_first_step=True, # Log the first step
+        logging_nan_inf_filter=True, # Filter NaN/inf loss values
+        log_level="error",      # Reduce terminal output verbosity
+        logging_dir=None        # Do not save logs to file which can affect progress bar
     )
     
     # Create Trainer
@@ -480,12 +505,27 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
     test_scores = test_ds["labels"]
     predictions = []
     
-    # Process in batches to avoid memory issues
+    # Process in batches to avoid memory issues and use tqdm for progress tracking
     batch_size = 32
-    for i in range(0, len(test_texts), batch_size):
+    total_batches = (len(test_texts) + batch_size - 1) // batch_size
+    
+    # Configure tqdm for Windows compatibility
+    print("Running inference on test set...")
+    for i in tqdm.tqdm(range(0, len(test_texts), batch_size), 
+                      desc="Inference", 
+                      total=total_batches,
+                      leave=True,
+                      position=0,
+                      disable=None,
+                      mininterval=0.5,
+                      ncols=100,
+                      smoothing=0.3,
+                      bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt}'):
         batch_texts = test_texts[i:i+batch_size]
-        batch_preds = pipe(list(batch_texts))
+        batch_preds = pipe(list(batch_texts), batch_size=batch_size)
         predictions.extend([float(pred["score"]) for pred in batch_preds])
+    
+    print("\nInference complete!")
     
     # Calculate metrics
     preds_array = torch.tensor(predictions).numpy()
