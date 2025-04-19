@@ -90,6 +90,9 @@ DB_PATH    = pathlib.Path(os.getenv("DB_PATH", "youtube_dataset.duckdb"))
 S3_BUCKET  = os.getenv("S3_BUCKET")
 S3_KEY     = os.getenv("S3_KEY")
 MAX_LEN    = 32
+# Define separate max lengths for titles and descriptions
+MAX_LEN_TITLE = 64
+MAX_LEN_DESC = 256
 SEED       = 42
 random.seed(SEED)
 
@@ -99,6 +102,64 @@ def fetch_duckdb():
         boto3.client("s3").download_file(S3_BUCKET, S3_KEY, str(DB_PATH))
     if not DB_PATH.exists():
         sys.exit("❌ DuckDB warehouse not found. Run build_youtube_dataset.py first.")
+
+# Create a new function to prepare regression dataset
+def stage_prep_regression():
+    """Prepare a dataset specifically for regression models with full range of viral scores."""
+    print("▶️ Preparing regression dataset with full viral score distribution")
+    fetch_duckdb()
+    con = duckdb.connect(DB_PATH)
+    
+    # Count distribution of viral scores
+    viral_dist = con.execute("""
+        SELECT 
+            COUNT(*) FILTER (WHERE viral_score < 0.05) as vs_lt_05,
+            COUNT(*) FILTER (WHERE viral_score >= 0.05 AND viral_score < 0.10) as vs_05_10,
+            COUNT(*) FILTER (WHERE viral_score >= 0.10 AND viral_score < 0.15) as vs_10_15,
+            COUNT(*) FILTER (WHERE viral_score >= 0.15 AND viral_score < 0.20) as vs_15_20,
+            COUNT(*) FILTER (WHERE viral_score >= 0.20) as vs_20_plus,
+            COUNT(*) FILTER (WHERE viral_score IS NOT NULL) as total_with_score
+        FROM youtube_videos
+        WHERE title IS NOT NULL AND description IS NOT NULL
+    """).fetchone()
+    
+    print(f"  Viral score distribution:")
+    print(f"    < 0.05: {viral_dist[0]:,}")
+    print(f"    0.05 - 0.10: {viral_dist[1]:,}")
+    print(f"    0.10 - 0.15: {viral_dist[2]:,}")
+    print(f"    0.15 - 0.20: {viral_dist[3]:,}")
+    print(f"    ≥ 0.20: {viral_dist[4]:,}")
+    print(f"    Total with scores: {viral_dist[5]:,}")
+    
+    # Query all data without a viral score threshold
+    df = con.execute("""
+        SELECT title, description, viral_score
+        FROM youtube_videos
+        WHERE title IS NOT NULL 
+          AND description IS NOT NULL
+          AND viral_score IS NOT NULL
+        ORDER BY random()
+    """).df()
+    con.close()
+    
+    print(f"✓ Loaded {len(df):,} rows for regression training (full viral score range)")
+    
+    # Sanity check for duplicates
+    n_dupes = df.duplicated(subset=["title", "description"]).sum()
+    if n_dupes > 0:
+        print(f"❌ WARNING: Found {n_dupes} duplicate rows (by title+description). Dropping duplicates.")
+        df = df.drop_duplicates(subset=["title", "description"]).reset_index(drop=True)
+        print(f"  After dropping duplicates: {len(df):,} rows remain.")
+    else:
+        print("✓ No duplicate rows found (by title+description).")
+    
+    # Create the dataset
+    ds = Dataset.from_pandas(df)
+    split = ds.train_test_split(test_size=0.1, seed=SEED)
+    split.save_to_disk("hf_dataset_reg")
+    print("✅ Regression dataset saved ➜ hf_dataset_reg/")
+    
+    return True
 
 # ───────────────────────── Prep Stage ─────────────────────────
 def stage_prep():
@@ -167,29 +228,16 @@ def stage_prep():
     print(f"    Current filter (VS≥0.10, with date handling): {combined_counts[0]:,}")
     print(f"    Relaxed filter (VS≥0.05, no date filter): {combined_counts[1]:,}")
     
-    # Modified main query with relaxed filters if needed
-    viral_threshold = 0.1
-    include_null_dates = True
-    
-    # If the current filter yields < 1000 results, automatically use more relaxed filter
-    if combined_counts[0] < 1000 and combined_counts[1] >= 1000:
-        viral_threshold = 0.05
-        print(f"⚠️ Automatically using relaxed viral threshold to get more examples")
-    
-    # Build the date filter condition
-    date_condition = "(publishedAt >= (CURRENT_DATE - INTERVAL '5 years') OR publishedAt IS NULL)" if include_null_dates else "publishedAt >= (CURRENT_DATE - INTERVAL '5 years')"
-    
-    df = con.execute(
-        f"""
+    # Modified main query
+    df = con.execute("""
         SELECT title, description, viral_score
         FROM youtube_videos
-        WHERE viral_score >= {viral_threshold}
-          AND title IS NOT NULL AND description IS NOT NULL
-          AND {date_condition}
-        ORDER BY random();
+        WHERE title IS NOT NULL 
+          AND description IS NOT NULL
+        ORDER BY random()
     """).df()
     con.close()
-    print(f"✓ loaded {len(df):,} rows for training (threshold={viral_threshold})")
+    print(f"✓ loaded {len(df):,} rows for training (full range)")
     # Sanity check for duplicates
     n_dupes = df.duplicated(subset=["title", "description"]).sum()
     if n_dupes > 0:
@@ -211,8 +259,6 @@ def stage_prep():
             "### Response\nTitle:"
         )
 
-
-        
         resp = title + (f"\nDescription: {desc}" if desc else "")
         data.append({
             "prompt": prompt,
@@ -423,23 +469,39 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
     target: "title" or "description"
     """
     print(f"▶️ Training regression model for: {target}")
-    dsd = DatasetDict.load_from_disk("hf_dataset")
+    
+    # Use the dedicated regression dataset
+    dsd = DatasetDict.load_from_disk("hf_dataset_reg")
     
     # Extract the first 5 examples to check their contents
     first_examples = list(dsd["train"].select(range(5)))
     print(f"First examples ({target}):")
     for i, ex in enumerate(first_examples):
-        print(f"Example {i}: {target}='{ex[target]}', score={ex['score']} (type: {type(ex[target])})")
+        print(f"Example {i}: {target}='{ex[target]}', score={ex['viral_score']:.4f}")
     
     # Prepare a clean dataset with only text and labels fields
     def prepare_regression_example(example):
         text = example[target]
         if not isinstance(text, str):
             text = str(text) if text is not None else ""
-        return {"text": text, "labels": float(example["score"])}
+        return {"text": text, "labels": float(example["viral_score"])}
     
     train_ds = dsd["train"].map(prepare_regression_example)
     test_ds = dsd["test"].map(prepare_regression_example)
+    
+    # Standardize the labels (mean=0, std=1)
+    train_labels = [ex["labels"] for ex in train_ds]
+    label_mean = sum(train_labels) / len(train_labels)
+    label_std = (sum((x - label_mean) ** 2 for x in train_labels) / len(train_labels)) ** 0.5
+    
+    print(f"Label statistics - Mean: {label_mean:.4f}, Std: {label_std:.4f}")
+    
+    def normalize_labels(example):
+        return {"labels": (example["labels"] - label_mean) / label_std, "text": example["text"]}
+    
+    # Apply normalization
+    train_ds = train_ds.map(normalize_labels)
+    test_ds = test_ds.map(normalize_labels)
     
     # Configure the tokenizer
     tok = AutoTokenizer.from_pretrained(model_ckpt)
@@ -453,15 +515,17 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
         problem_type="regression"
     )
     
-    # Define the preprocessing function
+    # Define the preprocessing function with appropriate max length
+    max_len = MAX_LEN_TITLE if target == "title" else MAX_LEN_DESC
+    print(f"Using max_length={max_len} for {target}")
+    
     def preprocess_function(examples):
-        return tok(examples["text"], padding="max_length", truncation=True, max_length=MAX_LEN)
+        return tok(examples["text"], padding="max_length", truncation=True, max_length=max_len)
     
     # Tokenize the datasets
     tokenized_train = train_ds.map(preprocess_function, batched=True)
     tokenized_test = test_ds.map(preprocess_function, batched=True)
     
-
     # Set up training arguments
     training_args = TrainingArguments(
         output_dir=f"{target}_reg_ckpt",
@@ -475,12 +539,12 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
         load_best_model_at_end=True,
         report_to=[],
         # Configure progress bar behavior
-        disable_tqdm=False,     # Don't disable tqdm
-        logging_steps=100,       # Control update frequency
-        logging_first_step=True, # Log the first step
-        logging_nan_inf_filter=True, # Filter NaN/inf loss values
-        log_level="error",      # Reduce terminal output verbosity
-        logging_dir=None        # Do not save logs to file which can affect progress bar
+        disable_tqdm=False,
+        logging_steps=100,
+        logging_first_step=True,
+        logging_nan_inf_filter=True,
+        log_level="error",
+        logging_dir=None
     )
     
     # Create Trainer
@@ -497,49 +561,42 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
     trainer.save_model(f"{target}_reg_ckpt")
     print(f"✅ Regression model saved ➜ {target}_reg_ckpt/")
     
-    # Evaluate on test set
-    from transformers import pipeline
-    pipe = pipeline("text-classification", model=f"{target}_reg_ckpt", tokenizer=tok, device=0 if torch.cuda.is_available() else -1)
-    
-    # Get predictions
-    test_texts = test_ds["text"]
-    test_scores = test_ds["labels"]
-    predictions = []
-    
-    # Process in batches to avoid memory issues and use tqdm for progress tracking
-    batch_size = 32
-    total_batches = (len(test_texts) + batch_size - 1) // batch_size
-    
-    # Configure tqdm for Windows compatibility
+    # Evaluate on test set using trainer.predict
     print("Running inference on test set...")
-    for i in tqdm.tqdm(range(0, len(test_texts), batch_size), 
-                      desc="Inference", 
-                      total=total_batches,
-                      leave=True,
-                      position=0,
-                      disable=None,
-                      mininterval=0.5,
-                      ncols=100,
-                      smoothing=0.3,
-                      bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt}'):
-        batch_texts = test_texts[i:i+batch_size]
-        batch_preds = pipe(list(batch_texts), batch_size=batch_size)
-        predictions.extend([float(pred["score"]) for pred in batch_preds])
+    predictions = trainer.predict(tokenized_test)
     
-    print("\nInference complete!")
+    # Extract predictions and ground truth
+    y_pred = predictions.predictions.squeeze()
+    y_true = predictions.label_ids
+    
+    # Denormalize predictions for proper metrics
+    y_pred_denorm = y_pred * label_std + label_mean
+    y_true_denorm = y_true * label_std + label_mean
     
     # Calculate metrics
-    preds_array = torch.tensor(predictions).numpy()
-    scores_array = torch.tensor(test_scores).numpy()
+    mse = mean_squared_error(y_true, y_pred)  # Normalized MSE
+    mse_denorm = mean_squared_error(y_true_denorm, y_pred_denorm)  # Denormalized MSE
+    spearman = spearmanr(y_true, y_pred).correlation
     
-    mse = mean_squared_error(scores_array, preds_array)
-    spearman = spearmanr(scores_array, preds_array).correlation
-    print(f"Test MSE: {mse:.4f} | Spearman: {spearman:.4f}")
+    print(f"Test MSE (normalized): {mse:.6f}")
+    print(f"Test MSE (original scale): {mse_denorm:.6f}")
+    print(f"Spearman correlation: {spearman:.4f}")
+    
+    # Save some sample predictions
+    sample_indices = random.sample(range(len(y_pred)), min(10, len(y_pred)))
+    print("\nSample predictions (original scale):")
+    for idx in sample_indices:
+        text = tokenized_test[idx]["text"]
+        if len(text) > 50:
+            text = text[:50] + "..."
+        print(f"Text: '{text}'")
+        print(f"True: {y_true_denorm[idx]:.4f}, Pred: {y_pred_denorm[idx]:.4f}")
+        print("-" * 40)
 
 # ─────────────────────────── CLI ──────────────────────────
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("stage", choices=["prep", "regression_title", "regression_description", "all"]);
+    p.add_argument("stage", choices=["prep", "prep_regression", "regression_title", "regression_description", "all"]);
     p.add_argument("--epochs", type=int, default=3);
     p.add_argument("--bs", type=int, default=32);
     args = p.parse_args(); 
@@ -547,11 +604,14 @@ if __name__ == "__main__":
     print(f"Running stage: {args.stage}")
     if args.stage == "prep":
         stage_prep()
+    if args.stage == "prep_regression":
+        stage_prep_regression()
     if args.stage == "regression_title":
         stage_regression(target="title", epochs=args.epochs, bs=args.bs)
     if args.stage == "regression_description":
         stage_regression(target="description", epochs=args.epochs, bs=args.bs)
     if args.stage == "all":
         stage_prep()
+        stage_prep_regression()
         stage_regression(target="title", epochs=args.epochs, bs=args.bs)
         stage_regression(target="description", epochs=args.epochs, bs=args.bs)
