@@ -20,7 +20,7 @@ except ImportError:
 # S3 Configuration
 S3_BUCKET = os.getenv("S3_BUCKET")
 S3_KEY = os.getenv("S3_KEY", "warehouse/youtube_dataset.duckdb")
-LOCAL_DB = Path("/tmp/youtube_dataset.duckdb")
+LOCAL_DB = os.getenv("DB_PATH", "youtube_dataset.duckdb")
 
 # YouTube API Configuration
 YT_API_KEY = os.getenv("YT_API_KEY")
