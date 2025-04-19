@@ -52,6 +52,7 @@ from peft import LoraConfig
 from trl import SFTTrainer, RewardTrainer, DPOTrainer, SFTConfig, RewardConfig, DPOConfig
 import torch
 import boto3
+from collections import Counter
 
 # ─────────────── Config & Environment ───────────────
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
@@ -185,9 +186,45 @@ def stage_prep():
     split.save_to_disk("hf_dataset")
     print("✅ Dataset saved ➜ hf_dataset/")
 
+def sanity_check_dataset(dsd):
+    """Sanity checks for the training dataset before SFT."""
+    train = dsd["train"]
+    n = len(train)
+    if n < 1000:
+        print(f"❌ ERROR: Training set too small: {n} examples.")
+        sys.exit(1)
+    # Check for empty prompts/responses
+    n_empty_prompt = sum(not (ex["prompt"] and ex["prompt"].strip()) for ex in train)
+    n_empty_resp = sum(not (ex["response"] and ex["response"].strip()) for ex in train)
+    if n_empty_prompt > 0 or n_empty_resp > 0:
+        print(f"❌ ERROR: Found {n_empty_prompt} empty prompts and {n_empty_resp} empty responses.")
+        sys.exit(1)
+    # Check for excessive duplication
+    prompt_counts = Counter(ex["prompt"] for ex in train)
+    resp_counts = Counter(ex["response"] for ex in train)
+    most_common_prompt, prompt_freq = prompt_counts.most_common(1)[0]
+    most_common_resp, resp_freq = resp_counts.most_common(1)[0]
+    if prompt_freq > n * 0.1:
+        print(f"❌ ERROR: Most common prompt appears {prompt_freq} times (>10% of data). Example: {most_common_prompt[:80]}")
+        sys.exit(1)
+    if resp_freq > n * 0.1:
+        print(f"❌ ERROR: Most common response appears {resp_freq} times (>10% of data). Example: {most_common_resp[:80]}")
+        sys.exit(1)
+    # Check for short responses
+    short_resps = sum(len(ex["response"]) < 10 for ex in train)
+    if short_resps > n * 0.2:
+        print(f"❌ ERROR: {short_resps} responses are shorter than 10 chars (>20% of data). Possible data issue.")
+        sys.exit(1)
+    # Check for train/test split
+    if "test" not in dsd or len(dsd["test"]) == 0:
+        print(f"❌ ERROR: No test split found or test set is empty.")
+        sys.exit(1)
+    print("✓ Dataset sanity checks passed.")
+
 # ───────────────────────── SFT Stage ─────────────────────────
 def stage_sft(epochs=3, bs=4):
     dsd = DatasetDict.load_from_disk("hf_dataset")
+    sanity_check_dataset(dsd)
 
     if torch.cuda.is_available():
         print(f"✓ Using GPU: {torch.cuda.get_device_name(0)}")
