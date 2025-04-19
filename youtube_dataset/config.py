@@ -32,7 +32,14 @@ KAGGLE_SLUGS = {
     "daily": "pyuser11/youtube-trending-videos-updated-daily",
     "113c": "asaniczka/trending-youtube-videos-113-countries",
 }
-KEEP_REGIONS = {"US", "GB", "IN"}
+# Expanded KEEP_REGIONS: EU countries + US, CA, AU, NZ, GB, CH, NO, IS
+KEEP_REGIONS = {
+    # EU countries
+    "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE", "GR", "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", "SI", "ES", "SE",
+    # Other similar countries
+    "US", "CA", "AU", "NZ", "GB", "CH", "NO", "IS",
+    # Add more if needed
+}
 
 # Time Configuration
 NOW_UTC = datetime.now(timezone.utc)

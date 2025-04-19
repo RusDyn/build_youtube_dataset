@@ -167,9 +167,14 @@ def stage_prep():
         prompt = (
             "### Instruction\n"  # keep format consistent across tasks
             "Write a viral YouTube title and a 300‑character description.\n\n"
-            "### Input\n{\n  \"topic\": \"PLACEHOLDER\"\n}\n\n### Response\nTitle:"  # model will output title & description
+            "### Input\n{\n  \"topic\": \"PLACEHOLDER\"\n}\n\n### Response\nTitle:"
         )
-        resp = f"{r['title'].strip()}\nDescription: {r['description'][:300].strip()}"
+        title = r['title'].strip() if isinstance(r['title'], str) else ""
+        desc = r['description'][:300].strip() if isinstance(r['description'], str) and r['description'].strip() else None
+        if desc:
+            resp = f"{title}\nDescription: {desc}"
+        else:
+            resp = f"{title}"
         data.append({"prompt": prompt, "response": resp, "score": float(r["viral_score"])})
 
     ds = Dataset.from_list(data)
