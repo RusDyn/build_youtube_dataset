@@ -51,6 +51,7 @@ import torch
 
 # ─────────────────────── Config & environment ─────────────────────
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+os.environ["ACCELERATE_MIXED_PRECISION"] = "no"
 BASE_MODEL  = os.getenv("BASE_MODEL", "mistralai/Mistral-7B-Instruct-v0.3")
 DB_PATH     = pathlib.Path(os.getenv("DB_PATH", "youtube_dataset.duckdb"))
 S3_BUCKET   = os.getenv("S3_BUCKET")
@@ -361,7 +362,8 @@ def stage_rlhf(epochs=3):
         gradient_accumulation_steps=8,  # Try 8 or 4
         learning_rate=5e-6,
         logging_steps=50,
-        fp16=False,  # Disable fp16
+        fp16=False,
+        bf16=False,
         report_to=[],
         gradient_checkpointing=True,
         optim="adamw_torch_fused",
