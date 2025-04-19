@@ -258,21 +258,34 @@ def stage_reward(epochs=2):
     base_rm = "sentence-transformers/all-MiniLM-L6-v2"  # tiny, fast
     tok = AutoTokenizer.from_pretrained(base_rm)
 
-    def proc(examples):
-        # Process the batch of examples
-        texts = [prompt + response for prompt, response in zip(examples["prompt"], examples["response"])]
-        tokenized = tok(texts, truncation=True, max_length=MAX_LEN, padding=True)
+    # Create pairs of examples for preference learning
+    def create_preference_pairs(examples):
+        # Sort examples by score to get high and low scoring pairs
+        sorted_indices = sorted(range(len(examples["score"])), 
+                              key=lambda i: examples["score"][i], 
+                              reverse=True)
+        
+        # Create pairs of high and low scoring examples
+        chosen = []
+        rejected = []
+        for i in range(0, len(sorted_indices)-1, 2):
+            if examples["score"][sorted_indices[i]] > examples["score"][sorted_indices[i+1]]:
+                chosen.append(examples["prompt"][sorted_indices[i]] + examples["response"][sorted_indices[i]])
+                rejected.append(examples["prompt"][sorted_indices[i+1]] + examples["response"][sorted_indices[i+1]])
+            else:
+                chosen.append(examples["prompt"][sorted_indices[i+1]] + examples["response"][sorted_indices[i+1]])
+                rejected.append(examples["prompt"][sorted_indices[i]] + examples["response"][sorted_indices[i]])
         
         return {
-            "input_ids": tokenized["input_ids"],
-            "attention_mask": tokenized["attention_mask"],
-            "labels": examples["score"]  # Use score as the target for regression
+            "chosen": chosen,
+            "rejected": rejected
         }
 
+    # Create preference pairs dataset
     tds = dsdict["train"].map(
-        proc,
+        create_preference_pairs,
         batched=True,
-        batch_size=32,  # Process in smaller batches
+        batch_size=32,
         remove_columns=dsdict["train"].column_names
     )
 
