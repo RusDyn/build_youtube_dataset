@@ -183,7 +183,13 @@ def stage_prep():
 
         
         resp = title + (f"\nDescription: {desc}" if desc else "")
-        data.append({"prompt": prompt, "response": resp, "score": float(r['viral_score'])})
+        data.append({
+            "prompt": prompt,
+            "response": resp,
+            "score": float(r['viral_score']),
+            "title": title,
+            "description": desc
+        })
     ds = Dataset.from_list(data)
     ds = ds.shuffle(SEED)
     split = ds.train_test_split(test_size=0.1, seed=SEED)
