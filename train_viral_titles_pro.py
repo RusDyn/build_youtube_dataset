@@ -274,7 +274,10 @@ def stage_reward(epochs=2):
         report_to=[],
     )
 
-    trainer = RewardTrainer(model=model, tokenizer=tok, train_dataset=tds, reward_column="score", args=args)
+    trainer = RewardTrainer(model=model, 
+        processing_class=tok, 
+        train_dataset=tds, 
+        reward_column="score", args=args)
     trainer.train()
     trainer.save_model("rm_ckpt")
     print("✅ Reward model ➜ rm_ckpt/")
@@ -312,7 +315,7 @@ def stage_rlhf(epochs=3):
     trainer = DPOTrainer(
         model=policy,
         ref_model=policy,
-        tokenizer=tok,
+        processing_class=tok,
         train_dataset=dpo_ds,
         args=args,
         beta=0.1,
