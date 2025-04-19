@@ -372,7 +372,7 @@ def stage_rlhf(epochs=3):
 
     trainer = DPOTrainer(
         model=policy,
-        ref_model=policy,  # Use the same model as reference
+        ref_model=None,  # Let TRL handle reference model for PEFT/LoRA
         processing_class=tok,
         train_dataset=dpo_ds,
         args=args,
