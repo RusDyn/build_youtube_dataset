@@ -81,20 +81,20 @@ def stage_prep():
     # Check viral score distribution
     viral_score_dist = con.execute("""
         SELECT 
-            COUNT(*) FILTER (WHERE viral_score >= 0.40) as vs_40_plus,
-            COUNT(*) FILTER (WHERE viral_score >= 0.30) as vs_30_plus,
             COUNT(*) FILTER (WHERE viral_score >= 0.20) as vs_20_plus,
-            COUNT(*) FILTER (WHERE viral_score >= 0.10) as vs_10_plus,
-            COUNT(*) FILTER (WHERE viral_score >= 0.05) as vs_05_plus
+            COUNT(*) FILTER (WHERE viral_score >= 0.23) as vs_23_plus,
+            COUNT(*) FILTER (WHERE viral_score >= 0.25) as vs_25_plus,
+            COUNT(*) FILTER (WHERE viral_score >= 0.27) as vs_27_plus,
+            COUNT(*) FILTER (WHERE viral_score >= 0.30) as vs_30_plus
         FROM youtube_videos
     """).fetchone()
     
     print(f"  Viral score distribution:")
-    print(f"    ≥ 0.40: {viral_score_dist[0]:,}")
-    print(f"    ≥ 0.30: {viral_score_dist[1]:,}")
-    print(f"    ≥ 0.20: {viral_score_dist[2]:,}")
-    print(f"    ≥ 0.10: {viral_score_dist[3]:,}")
-    print(f"    ≥ 0.05: {viral_score_dist[4]:,}")
+    print(f"    ≥ 0.20: {viral_score_dist[0]:,}")
+    print(f"    ≥ 0.23: {viral_score_dist[1]:,}")
+    print(f"    ≥ 0.25: {viral_score_dist[2]:,}")
+    print(f"    ≥ 0.27: {viral_score_dist[3]:,}")
+    print(f"    ≥ 0.30: {viral_score_dist[4]:,}")
     
     # Check date distribution
     date_dist = con.execute("""
@@ -134,7 +134,7 @@ def stage_prep():
     print(f"    Relaxed filter (VS≥0.05, no date filter): {combined_counts[1]:,}")
     
     # Modified main query with relaxed filters if needed
-    viral_threshold = 0.10
+    viral_threshold = 0.25
     include_null_dates = True
     
     # If the current filter yields < 1000 results, automatically use more relaxed filter
