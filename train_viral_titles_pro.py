@@ -43,7 +43,7 @@ import duckdb, pandas as pd
 from datasets import Dataset, DatasetDict
 from transformers import (
     AutoTokenizer, AutoModelForCausalLM, TrainingArguments, BitsAndBytesConfig,
-    AutoModel
+    AutoModel, AutoModelForSequenceClassification
 )
 from peft import LoraConfig, get_peft_model
 from trl import SFTTrainer, RewardTrainer, DPOTrainer, SFTConfig, RewardConfig
@@ -289,7 +289,12 @@ def stage_reward(epochs=2):
         remove_columns=dsdict["train"].column_names
     )
 
-    model = AutoModel.from_pretrained(base_rm)
+    # Use AutoModelForSequenceClassification instead of AutoModel
+    model = AutoModelForSequenceClassification.from_pretrained(
+        base_rm,
+        num_labels=1,  # Single output for reward score
+        problem_type="regression"  # We're predicting a continuous score
+    )
 
     # Use RewardConfig instead of TrainingArguments
     args = RewardConfig(
