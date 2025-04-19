@@ -50,11 +50,12 @@ from trl import SFTTrainer, RewardTrainer, DPOTrainer, SFTConfig, RewardConfig, 
 import torch
 
 # ─────────────────────── Config & environment ─────────────────────
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 BASE_MODEL  = os.getenv("BASE_MODEL", "mistralai/Mistral-7B-Instruct-v0.3")
 DB_PATH     = pathlib.Path(os.getenv("DB_PATH", "youtube_dataset.duckdb"))
 S3_BUCKET   = os.getenv("S3_BUCKET")
 S3_KEY      = os.getenv("S3_KEY")
-MAX_LEN     = 128
+MAX_LEN     = 64
 SEED        = 42
 random.seed(SEED)
 
