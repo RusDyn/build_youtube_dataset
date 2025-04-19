@@ -258,15 +258,23 @@ def stage_reward(epochs=2):
     base_rm = "sentence-transformers/all-MiniLM-L6-v2"  # tiny, fast
     tok = AutoTokenizer.from_pretrained(base_rm)
 
-    def proc(ex):
-        # Format the dataset for reward modeling
+    def proc(examples):
+        # Process the batch of examples
+        texts = [prompt + response for prompt, response in zip(examples["prompt"], examples["response"])]
+        tokenized = tok(texts, truncation=True, max_length=MAX_LEN, padding=True)
+        
         return {
-            "input_ids": tok(ex["prompt"] + ex["response"], truncation=True, max_length=MAX_LEN)["input_ids"],
-            "attention_mask": tok(ex["prompt"] + ex["response"], truncation=True, max_length=MAX_LEN)["attention_mask"],
-            "labels": ex["score"]  # Use score as the target for regression
+            "input_ids": tokenized["input_ids"],
+            "attention_mask": tokenized["attention_mask"],
+            "labels": examples["score"]  # Use score as the target for regression
         }
 
-    tds = dsdict["train"].map(proc, batched=True, remove_columns=dsdict["train"].column_names)
+    tds = dsdict["train"].map(
+        proc,
+        batched=True,
+        batch_size=32,  # Process in smaller batches
+        remove_columns=dsdict["train"].column_names
+    )
 
     model = AutoModel.from_pretrained(base_rm)
 
