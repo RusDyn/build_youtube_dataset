@@ -371,8 +371,10 @@ def stage_rlhf(epochs=3):
         processing_class=tok,
         train_dataset=dpo_ds,
         args=args,
-        beta=0.1,
         reward_model=reward,
+        max_length=MAX_LEN,
+        max_prompt_length=MAX_LEN // 2,
+        max_target_length=MAX_LEN // 2,
     )
     trainer.train()
     trainer.save_model("dpo_ckpt")
