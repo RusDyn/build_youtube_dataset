@@ -19,6 +19,8 @@ Stages & CLI
 | reward | `reward` | Train regression reward model predicting `viral_score` |
 | rlhf   | `rlhf`   | DPO‑train policy against reward model |
 | all    | `all`    | run all stages sequentially |
+| regression_title | `regression_title` | Train a regression model to predict viral_score from title |
+| regression_description | `regression_description` | Train a regression model to predict viral_score from description |
 
 Environment variables
 ---------------------
@@ -49,10 +51,12 @@ from transformers import (
     BitsAndBytesConfig
 )
 from peft import LoraConfig
-from trl import SFTTrainer, RewardTrainer, DPOTrainer, SFTConfig, RewardConfig, DPOConfig
+from trl import SFTTrainer, RewardTrainer, DPOTrainer, SFTConfig, RewardConfig, DPOConfig, DataCollatorForCompletionOnlyLM
 import torch
 import boto3
 from collections import Counter
+from sklearn.metrics import mean_squared_error
+from scipy.stats import spearmanr
 
 # ─────────────── Config & Environment ───────────────
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
@@ -260,6 +264,13 @@ def stage_sft(epochs=3, bs=4):
         bias="none",
         task_type="CAUSAL_LM"
     )
+    # Define your response template (the string that always precedes the response)
+    response_template = "### Response\nTitle:"
+
+    # Create the collator
+    collator = DataCollatorForCompletionOnlyLM(response_template, tokenizer=tok)
+
+    # Pass the collator to SFTTrainer
     trainer = SFTTrainer(
         model=BASE_MODEL,
         args=args,
@@ -267,6 +278,7 @@ def stage_sft(epochs=3, bs=4):
         peft_config=peft_cfg,
         processing_class=tok,
         formatting_func=formatting_prompts_func,
+        data_collator=collator,
     )
     trainer.train(); 
     trainer.save_model("sft_ckpt")
@@ -368,16 +380,70 @@ def stage_rlhf(epochs=3, bs=1):
 
     print("✅ RLHF DPO done ➜ dpo_ckpt/")
 
+def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-transformers/all-MiniLM-L12-v2"):
+    """
+    Train a regression model to predict viral_score from title or description.
+    target: "title" or "description"
+    """
+    print(f"▶️ Training regression model for: {target}")
+    dsd = DatasetDict.load_from_disk("hf_dataset")
+    train_texts = dsd["train"][target]
+    train_scores = dsd["train"]["score"]
+    test_texts = dsd["test"][target]
+    test_scores = dsd["test"]["score"]
+
+    tok = AutoTokenizer.from_pretrained(model_ckpt)
+    model = AutoModelForSequenceClassification.from_pretrained(
+        model_ckpt, num_labels=1, problem_type="regression"
+    )
+
+    def fmt(ex):
+        return ex[target]
+
+    cfg = SFTConfig(
+        output_dir=f"{target}_reg_ckpt",
+        per_device_train_batch_size=bs,
+        num_train_epochs=epochs,
+        learning_rate=2e-5,
+        fp16=True,
+        max_length=MAX_LEN,
+        report_to=[],
+    )
+
+    trainer = SFTTrainer(
+        model=model,
+        args=cfg,
+        train_dataset=dsd["train"],
+        eval_dataset=dsd["test"],
+        formatting_func=fmt,
+        processing_class=tok,
+    )
+    trainer.train()
+    trainer.save_model(f"{target}_reg_ckpt")
+    print(f"✅ Regression model saved ➜ {target}_reg_ckpt/")
+
+    # Evaluate on test set
+    preds = trainer.predict(dsd["test"]).predictions.flatten()
+    mse = mean_squared_error(test_scores, preds)
+    spearman = spearmanr(test_scores, preds).correlation
+    print(f"Test MSE: {mse:.4f} | Spearman: {spearman:.4f}")
+
 # ─────────────────────────── CLI ──────────────────────────
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("stage", choices=["prep","sft","reward","rlhf","all"]);
+    p.add_argument("stage", choices=["prep", "regression_title", "regression_description", "all"]);
     p.add_argument("--epochs", type=int, default=3);
-    p.add_argument("--bs", type=int, default=4);
+    p.add_argument("--bs", type=int, default=32);
     args = p.parse_args(); 
     
     print(f"Running stage: {args.stage}")
-    if args.stage in ("prep","all"):    stage_prep()
-    if args.stage in ("sft","all"):     stage_sft(epochs=args.epochs, bs=args.bs)
-    if args.stage in ("reward","all"):  stage_reward(epochs=args.epochs)
-    if args.stage in ("rlhf","all"):    stage_rlhf(epochs=args.epochs, bs=args.bs)
+    if args.stage == "prep":
+        stage_prep()
+    if args.stage == "regression_title":
+        stage_regression(target="title", epochs=args.epochs, bs=args.bs)
+    if args.stage == "regression_description":
+        stage_regression(target="description", epochs=args.epochs, bs=args.bs)
+    if args.stage == "all":
+        stage_prep()
+        stage_regression(target="title", epochs=args.epochs, bs=args.bs)
+        stage_regression(target="description", epochs=args.epochs, bs=args.bs)
