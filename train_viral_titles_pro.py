@@ -46,7 +46,7 @@ from transformers import (
     AutoModel, AutoModelForSequenceClassification
 )
 from peft import LoraConfig, get_peft_model
-from trl import SFTTrainer, RewardTrainer, DPOTrainer, SFTConfig, RewardConfig
+from trl import SFTTrainer, RewardTrainer, DPOTrainer, SFTConfig, RewardConfig, DPOConfig
 import torch
 
 # ─────────────────────── Config & environment ─────────────────────
@@ -351,7 +351,8 @@ def stage_rlhf(epochs=3):
 
     dpo_ds = dsdict["train"].map(make_pairs, remove_columns=dsdict["train"].column_names)
 
-    args = TrainingArguments(
+    # Use DPOConfig instead of TrainingArguments
+    args = DPOConfig(
         output_dir="dpo_ckpt",
         num_train_epochs=epochs,
         per_device_train_batch_size=2,
@@ -363,18 +364,18 @@ def stage_rlhf(epochs=3):
         # Add memory optimization settings
         gradient_checkpointing=True,
         optim="adamw_torch_fused",
+        beta=0.1,  # DPO beta parameter
+        max_length=MAX_LEN,
+        max_prompt_length=MAX_LEN // 2,
+        max_target_length=MAX_LEN // 2,
     )
 
     trainer = DPOTrainer(
         model=policy,
-        ref_model=policy,
+        ref_model=policy,  # Use the same model as reference
         processing_class=tok,
         train_dataset=dpo_ds,
         args=args,
-        reward_model=reward,
-        max_length=MAX_LEN,
-        max_prompt_length=MAX_LEN // 2,
-        max_target_length=MAX_LEN // 2,
     )
     trainer.train()
     trainer.save_model("dpo_ckpt")
