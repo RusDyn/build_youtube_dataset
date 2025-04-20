@@ -21,6 +21,8 @@ Stages & CLI
 | all    | `all`    | run all stages sequentially |
 | regression_title | `regression_title` | Train a regression model to predict viral_score from title |
 | regression_description | `regression_description` | Train a regression model to predict viral_score from description |
+| analyze_labels | `analyze_labels` | Analyze the distribution of viral scores in the dataset |
+| fix_labels | `fix_labels` | Fix a dataset with biased viral scores by adding small Gaussian noise to the labels |
 
 Environment variables
 ---------------------
@@ -63,6 +65,9 @@ from transformers import Trainer, TrainingArguments
 import tqdm.auto as tqdm
 # Import threading for RLock
 import threading
+from transformers import TrainerCallback, TrainerState, TrainerControl
+from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
+from transformers import PairwiseLoss
 
 
 # ─────────────── Config & Environment ───────────────
@@ -463,7 +468,59 @@ def stage_rlhf(epochs=3, bs=1):
 
     print("✅ RLHF DPO done ➜ dpo_ckpt/")
 
-def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-transformers/all-MiniLM-L12-v2", lr=2e-5, scheduler_type="linear"):
+class SpearmanCallback(TrainerCallback):
+    """
+    Callback to compute Spearman correlation during evaluation and save the best model.
+    """
+    def __init__(self, eval_dataset, tokenizer):
+        self.eval_dataset = eval_dataset
+        self.tokenizer = tokenizer
+        self.best_spearman = -1.0
+        
+    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+        # Get the model from kwargs
+        model = kwargs.get("model")
+        if model is None:
+            return
+        
+        # Run prediction on eval dataset
+        trainer = kwargs.get("trainer")
+        if trainer is None:
+            return
+            
+        predictions = trainer.predict(self.eval_dataset)
+        
+        # Calculate Spearman correlation
+        y_pred = predictions.predictions.squeeze()
+        y_true = predictions.label_ids
+        
+        current_spearman = spearmanr(y_true, y_pred).correlation
+        
+        # Log the Spearman correlation
+        metrics["eval_spearman"] = current_spearman
+        print(f"Evaluation Spearman: {current_spearman:.4f}")
+        
+        # Save the best model based on Spearman
+        if current_spearman > self.best_spearman:
+            self.best_spearman = current_spearman
+            
+            # Only save if we're the main process
+            if trainer.is_world_process_zero():
+                # Save the model
+                checkpoint_folder = f"{PREFIX_CHECKPOINT_DIR}-best-spearman"
+                output_dir = os.path.join(args.output_dir, checkpoint_folder)
+                trainer.save_model(output_dir)
+                
+                # Also save the tokenizer and training arguments
+                if trainer.tokenizer is not None:
+                    trainer.tokenizer.save_pretrained(output_dir)
+                    
+                # Save trainer state
+                torch.save(args, os.path.join(output_dir, "training_args.bin"))
+                
+                print(f"🔥 New best model saved with Spearman: {current_spearman:.4f}")
+
+def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-transformers/all-mpnet-base-v2", lr=2e-5, scheduler_type="linear", weight_decay=0.01, warmup_ratio=0.1, use_pairwise=False, use_spearman_metric=False):
     """
     Train a regression model to predict viral_score from title or description.
     target: "title" or "description"
@@ -472,13 +529,29 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
     model_ckpt: pretrained model to use
     lr: learning rate
     scheduler_type: learning rate scheduler (linear, cosine, constant_with_warmup)
+    weight_decay: weight decay for regularization
+    warmup_ratio: portion of training to use for warmup
+    use_pairwise: use pairwise ranking loss instead of MSE
+    use_spearman_metric: use Spearman correlation as the metric for best model selection
     """
     print(f"▶️ Training regression model for: {target}")
     print(f"   Model: {model_ckpt}, Epochs: {epochs}, Batch size: {bs}")
     print(f"   Learning rate: {lr}, Scheduler: {scheduler_type}")
+    print(f"   Weight decay: {weight_decay}, Warmup ratio: {warmup_ratio}")
+    print(f"   Using pairwise loss: {use_pairwise}")
+    print(f"   Using Spearman metric for best model: {use_spearman_metric}")
     
-    # Use the dedicated regression dataset
-    dsd = DatasetDict.load_from_disk("hf_dataset_reg")
+    # First, analyze the viral score distribution to check for bias
+    bias_detected, _ = analyze_viral_score_distribution("hf_dataset_reg")
+    
+    # If bias is detected, use the fixed dataset
+    dataset_path = "hf_dataset_reg"
+    if bias_detected:
+        print("⚠️ Label bias detected. Using fixed dataset with Gaussian noise added.")
+        dataset_path = fix_biased_dataset("hf_dataset_reg", "hf_dataset_reg_fixed")
+    
+    # Use the appropriate dataset
+    dsd = DatasetDict.load_from_disk(dataset_path)
     
     # Extract the first 5 examples to check their contents
     first_examples = list(dsd["train"].select(range(5)))
@@ -516,11 +589,28 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
         tok.pad_token = tok.eos_token
     
     # Create the model
-    model = AutoModelForSequenceClassification.from_pretrained(
-        model_ckpt, 
-        num_labels=1, 
-        problem_type="regression"
-    )
+    if use_pairwise:
+        model = AutoModelForSequenceClassification.from_pretrained(
+            model_ckpt, 
+            num_labels=1, 
+            problem_type="single_label_classification"  # Changed for pairwise loss
+        )
+        # Configure dropout for regularization if available in config
+        if hasattr(model.config, "hidden_dropout_prob"):
+            model.config.hidden_dropout_prob = 0.1
+        if hasattr(model.config, "attention_probs_dropout_prob"):
+            model.config.attention_probs_dropout_prob = 0.1
+    else:
+        model = AutoModelForSequenceClassification.from_pretrained(
+            model_ckpt, 
+            num_labels=1, 
+            problem_type="regression"
+        )
+        # Configure dropout for regularization if available in config
+        if hasattr(model.config, "hidden_dropout_prob"):
+            model.config.hidden_dropout_prob = 0.1
+        if hasattr(model.config, "attention_probs_dropout_prob"):
+            model.config.attention_probs_dropout_prob = 0.1
     
     # Define the preprocessing function with appropriate max length
     max_len = MAX_LEN_TITLE if target == "title" else MAX_LEN_DESC
@@ -534,6 +624,10 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
     tokenized_test = test_ds.map(preprocess_function, batched=True)
     
     # Set up training arguments
+    metric_for_best_model = "eval_loss"  # Default
+    if use_spearman_metric:
+        metric_for_best_model = "eval_spearman"
+        
     training_args = TrainingArguments(
         output_dir=f"{target}_reg_ckpt",
         num_train_epochs=epochs,
@@ -545,6 +639,8 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
         save_strategy="epoch",
         eval_strategy="epoch",
         load_best_model_at_end=True,
+        metric_for_best_model=metric_for_best_model,
+        greater_is_better=(metric_for_best_model == "eval_spearman"),  # Higher is better for Spearman
         report_to=[],
         # Configure progress bar behavior
         disable_tqdm=False,
@@ -552,21 +648,61 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
         logging_first_step=True,
         logging_nan_inf_filter=True,
         log_level="error",
-        logging_dir=None
+        logging_dir=None,
+        weight_decay=weight_decay,
+        warmup_ratio=warmup_ratio
     )
     
-    # Create Trainer
-    trainer = Trainer(
-        model=model,
-        args=training_args,
-        train_dataset=tokenized_train,
-        eval_dataset=tokenized_test,
-        processing_class=tok,
-    )
+    # Create custom compute_loss function for pairwise loss if needed
+    if use_pairwise:
+        pairwise_loss_fct = PairwiseLoss()
+        
+        def compute_loss(model, inputs, return_outputs=False):
+            labels = inputs.pop("labels")
+            outputs = model(**inputs)
+            logits = outputs.logits.view(-1)
+            loss = pairwise_loss_fct(logits, labels)
+            return (loss, outputs) if return_outputs else loss
+            
+        # Create Trainer with pairwise loss
+        trainer = Trainer(
+            model=model,
+            args=training_args,
+            train_dataset=tokenized_train,
+            eval_dataset=tokenized_test,
+            processing_class=tok,
+            compute_loss=compute_loss,
+        )
+    else:
+        # Create standard Trainer
+        trainer = Trainer(
+            model=model,
+            args=training_args,
+            train_dataset=tokenized_train,
+            eval_dataset=tokenized_test,
+            processing_class=tok,
+        )
+    
+    # Add Spearman callback if requested
+    if use_spearman_metric:
+        spearman_callback = SpearmanCallback(tokenized_test, tok)
+        trainer.add_callback(spearman_callback)
     
     # Train the model
     trainer.train()
-    trainer.save_model(f"{target}_reg_ckpt")
+    
+    # Save the final model - if using Spearman metric, it will already have saved the best one
+    if not use_spearman_metric or not hasattr(trainer, "best_model_checkpoint"):
+        trainer.save_model(f"{target}_reg_ckpt")
+    else:
+        # Copy the best model to the final output directory
+        best_checkpoint = trainer.best_model_checkpoint
+        if best_checkpoint and os.path.exists(best_checkpoint):
+            print(f"Using best checkpoint: {best_checkpoint}")
+            model = AutoModelForSequenceClassification.from_pretrained(best_checkpoint)
+            model.save_pretrained(f"{target}_reg_ckpt")
+            tok.save_pretrained(f"{target}_reg_ckpt")
+    
     print(f"✅ Regression model saved ➜ {target}_reg_ckpt/")
     
     # Evaluate on test set using trainer.predict
@@ -601,16 +737,113 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
         print(f"True: {y_true_denorm[idx]:.4f}, Pred: {y_pred_denorm[idx]:.4f}")
         print("-" * 40)
 
+def analyze_viral_score_distribution(dataset_path="hf_dataset_reg"):
+    """
+    Analyze the distribution of viral scores in the dataset to check for label bias.
+    """
+    print("📊 Analyzing viral score distribution...")
+    
+    # Load the dataset
+    dsd = DatasetDict.load_from_disk(dataset_path)
+    
+    # Extract all viral scores
+    train_scores = [float(ex["viral_score"]) for ex in dsd["train"]]
+    
+    # Count frequency of each exact score value (rounded to 4 decimal places)
+    rounded_scores = [round(score, 4) for score in train_scores]
+    score_counts = Counter(rounded_scores)
+    
+    # Get the most common values
+    most_common = score_counts.most_common(10)
+    total_samples = len(train_scores)
+    
+    print(f"Total samples: {total_samples}")
+    print("\nTop 10 most common viral scores:")
+    for score, count in most_common:
+        percentage = (count / total_samples) * 100
+        print(f"  {score:.4f}: {count} samples ({percentage:.2f}%)")
+    
+    # Calculate distribution by ranges
+    ranges = [
+        (0.0, 0.05), (0.05, 0.10), (0.10, 0.15), 
+        (0.15, 0.18), (0.18, 0.19), (0.19, 0.20), 
+        (0.20, 0.21), (0.21, 0.22), (0.22, 0.25),
+        (0.25, 1.0)
+    ]
+    
+    print("\nDistribution by ranges:")
+    for low, high in ranges:
+        count = sum(1 for score in train_scores if low <= score < high)
+        percentage = (count / total_samples) * 100
+        print(f"  {low:.2f} - {high:.2f}: {count} samples ({percentage:.2f}%)")
+    
+    # Check for potential bias
+    top_score, top_count = most_common[0]
+    top_percentage = (top_count / total_samples) * 100
+    
+    bias_detected = False
+    if top_percentage > 30:
+        print(f"\n⚠️ WARNING: Label bias detected! {top_percentage:.2f}% of samples have viral_score={top_score:.4f}")
+        bias_detected = True
+    
+    return bias_detected, most_common
+
+def fix_biased_dataset(dataset_path="hf_dataset_reg", output_path="hf_dataset_reg_fixed"):
+    """
+    Fix a dataset with biased viral scores by adding small Gaussian noise to the labels.
+    """
+    print("🔧 Fixing biased viral score distribution...")
+    
+    # Load the dataset
+    dsd = DatasetDict.load_from_disk(dataset_path)
+    
+    # Add small Gaussian noise to each score
+    def add_noise_to_scores(example):
+        # Add small Gaussian noise (mean=0, std=0.0025) to the viral_score
+        # This maintains the general ranking but breaks exact value clusters
+        noise = random.gauss(0, 0.0025)  # Small standard deviation to maintain original score roughly
+        
+        # Ensure we don't go below 0 or above 1
+        new_score = max(0, min(1, float(example["viral_score"]) + noise))
+        return {"viral_score": new_score}
+    
+    # Apply the transformation
+    dsd_fixed = DatasetDict({
+        "train": dsd["train"].map(add_noise_to_scores),
+        "test": dsd["test"].map(add_noise_to_scores)
+    })
+    
+    # Save the fixed dataset
+    dsd_fixed.save_to_disk(output_path)
+    print(f"✅ Fixed dataset saved to {output_path}/")
+    
+    # Verify the fix
+    analyze_viral_score_distribution(output_path)
+    
+    return output_path
+
 # ─────────────────────────── CLI ──────────────────────────
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("stage", choices=["prep", "prep_regression", "regression_title", "regression_description", "all"]);
+    p.add_argument("stage", choices=["prep", "prep_regression", "regression_title", "regression_description", "all", "analyze_labels", "fix_labels"]);
     p.add_argument("--epochs", type=int, default=3);
     p.add_argument("--bs", type=int, default=32);
     p.add_argument("--lr", type=float, default=2e-5, help="Learning rate");
     p.add_argument("--scheduler", type=str, default="linear", 
                    choices=["linear", "cosine", "constant_with_warmup"], 
                    help="Learning rate scheduler");
+    p.add_argument("--model_ckpt", type=str, default="sentence-transformers/all-mpnet-base-v2", 
+                   help="Model checkpoint to use");
+    p.add_argument("--weight_decay", type=float, default=0.01, 
+                   help="Weight decay for regularization");
+    p.add_argument("--warmup_ratio", type=float, default=0.1, 
+                   help="Portion of training to use for warmup");
+    p.add_argument("--pairwise", action="store_true", 
+                   help="Use pairwise ranking loss instead of MSE");
+    p.add_argument("--spearman_metric", action="store_true", 
+                   help="Use Spearman correlation as the metric for best model selection");
+    p.add_argument("--dataset", type=str, default="hf_dataset_reg",
+                   help="Dataset path for analysis or fixing");
     args = p.parse_args(); 
     
     print(f"Running stage: {args.stage}")
@@ -620,14 +853,31 @@ if __name__ == "__main__":
         stage_prep_regression()
     if args.stage == "regression_title":
         stage_regression(target="title", epochs=args.epochs, bs=args.bs, 
-                        lr=args.lr, scheduler_type=args.scheduler)
+                        lr=args.lr, scheduler_type=args.scheduler,
+                        model_ckpt=args.model_ckpt, weight_decay=args.weight_decay,
+                        warmup_ratio=args.warmup_ratio, use_pairwise=args.pairwise,
+                        use_spearman_metric=args.spearman_metric)
     if args.stage == "regression_description":
         stage_regression(target="description", epochs=args.epochs, bs=args.bs,
-                        lr=args.lr, scheduler_type=args.scheduler)
+                        lr=args.lr, scheduler_type=args.scheduler,
+                        model_ckpt=args.model_ckpt, weight_decay=args.weight_decay,
+                        warmup_ratio=args.warmup_ratio, use_pairwise=args.pairwise,
+                        use_spearman_metric=args.spearman_metric)
+    if args.stage == "analyze_labels":
+        analyze_viral_score_distribution(args.dataset)
+    if args.stage == "fix_labels":
+        fix_biased_dataset(args.dataset, args.dataset + "_fixed")
     if args.stage == "all":
         stage_prep()
         stage_prep_regression()
+        analyze_viral_score_distribution("hf_dataset_reg")
         stage_regression(target="title", epochs=args.epochs, bs=args.bs,
-                        lr=args.lr, scheduler_type=args.scheduler)
+                        lr=args.lr, scheduler_type=args.scheduler,
+                        model_ckpt=args.model_ckpt, weight_decay=args.weight_decay,
+                        warmup_ratio=args.warmup_ratio, use_pairwise=args.pairwise,
+                        use_spearman_metric=args.spearman_metric)
         stage_regression(target="description", epochs=args.epochs, bs=args.bs,
-                        lr=args.lr, scheduler_type=args.scheduler)
+                        lr=args.lr, scheduler_type=args.scheduler,
+                        model_ckpt=args.model_ckpt, weight_decay=args.weight_decay,
+                        warmup_ratio=args.warmup_ratio, use_pairwise=args.pairwise,
+                        use_spearman_metric=args.spearman_metric)
