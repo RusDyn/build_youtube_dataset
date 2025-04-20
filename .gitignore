@@ -17,6 +17,8 @@ sft_ckpt/
 rm_ckpt/
 dpo_ckpt/
 hf_dataset/
+title_reg_ckpt/
+hf_dataset_reg_improved/
 *.model
 *.bin
 *.ot

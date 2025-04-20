@@ -129,7 +129,8 @@ def main():
             warmup_ratio=0.1,
             use_pairwise=args.use_pairwise,
             use_spearman_metric=args.use_spearman,
-            patience=args.patience
+            patience=args.patience,
+            dataset_path=args.dataset
         )
     elif args.stage == "regression_description":
         stage_regression(
@@ -143,7 +144,8 @@ def main():
             warmup_ratio=0.1,
             use_pairwise=args.use_pairwise,
             use_spearman_metric=args.use_spearman,
-            patience=args.patience
+            patience=args.patience,
+            dataset_path=args.dataset
         )
     
     #elif args.stage == "sft":
@@ -168,7 +170,8 @@ def main():
             warmup_ratio=0.1,
             use_pairwise=args.use_pairwise,
             use_spearman_metric=args.use_spearman,
-            patience=args.patience
+            patience=args.patience,
+            dataset_path=args.dataset
         )
         stage_regression(
             target="description", 
@@ -181,7 +184,8 @@ def main():
             warmup_ratio=0.1,
             use_pairwise=args.use_pairwise,
             use_spearman_metric=args.use_spearman,
-            patience=args.patience
+            patience=args.patience,
+            dataset_path=args.dataset
         )
         #stage_sft(epochs=args.epochs, bs=args.bs)
         #stage_reward(epochs=args.epochs)

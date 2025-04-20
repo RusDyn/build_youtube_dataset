@@ -18,10 +18,26 @@ from ..utils import SpearmanCallback, analyze_viral_score_distribution, fix_bias
 from ..config import MAX_LEN_TITLE, MAX_LEN_DESC
 # Import early stopping callback
 from transformers import EarlyStoppingCallback
-    
+from ..utils import PairwiseRankingLoss
+        
+def compute_loss(model, inputs, return_outputs=False, num_items_in_batch=None):
+    """
+    Compute pairwise ranking loss for the model.
+    The num_items_in_batch parameter is not used but included for compatibility 
+    with Trainer's call signature.
+    """
+    pairwise_loss_fct = PairwiseRankingLoss()
+    labels = inputs.pop("labels")
+    outputs = model(**inputs)
+    logits = outputs.logits.view(-1)
+    # PairwiseRankingLoss already handles batch sizes internally
+    loss = pairwise_loss_fct(logits, labels)
+    return (loss, outputs) if return_outputs else loss 
+
 def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-transformers/all-mpnet-base-v2", 
                     lr=2e-5, scheduler_type="linear", weight_decay=0.01, warmup_ratio=0.1, 
-                    use_pairwise=True, use_spearman_metric=True, patience=2):
+                    use_pairwise=True, use_spearman_metric=True, patience=2,
+                    dataset_path="hf_dataset_reg"):
     """
     Train a regression model to predict viral_score from title or description.
     
@@ -37,6 +53,7 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
         use_pairwise: Use pairwise ranking loss instead of MSE (default: True)
         use_spearman_metric: Use Spearman correlation as metric for best model (default: True)
         patience: Number of evaluation calls with no improvement after which training will be stopped (default: 2)
+        dataset_path: Path to the dataset
     """
     print(f"▶️ Training regression model for: {target}")
     print(f"   Model: {model_ckpt}, Epochs: {epochs}, Batch size: {bs}")
@@ -45,15 +62,17 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
     print(f"   Using pairwise loss: {use_pairwise}")
     print(f"   Using Spearman metric for best model: {use_spearman_metric}")
     print(f"   Early stopping patience: {patience}")
+    print(f"   Using dataset path: {dataset_path}")
     
     # First, analyze the viral score distribution to check for bias
-    bias_detected, _ = analyze_viral_score_distribution("hf_dataset_reg")
+    bias_detected, _ = analyze_viral_score_distribution(dataset_path)
     
     # If bias is detected, use the fixed dataset
-    dataset_path = "hf_dataset_reg"
+    fixed_dataset_path = dataset_path
     if bias_detected:
         print("⚠️ Label bias detected. Using fixed dataset with Gaussian noise added.")
-        dataset_path = fix_biased_dataset("hf_dataset_reg", "hf_dataset_reg_fixed")
+        fixed_dataset_path = fix_biased_dataset(dataset_path, f"{dataset_path}_fixed")
+        dataset_path = fixed_dataset_path
     
     # Use the appropriate dataset
     dsd = DatasetDict.load_from_disk(dataset_path)
@@ -167,26 +186,19 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
     
     # Create custom compute_loss function for pairwise loss if needed
     if use_pairwise:
-        from ..utils import PairwiseRankingLoss
-        pairwise_loss_fct = PairwiseRankingLoss()
+
         
-        def compute_loss(model, inputs, return_outputs=False):
-            labels = inputs.pop("labels")
-            outputs = model(**inputs)
-            logits = outputs.logits.view(-1)
-            loss = pairwise_loss_fct(logits, labels)
-            return (loss, outputs) if return_outputs else loss
-            
         # Create Trainer with pairwise loss
         trainer = Trainer(
             model=model,
             args=training_args,
             train_dataset=tokenized_train,
             eval_dataset=tokenized_test,
-            tokenizer=tok,
-            compute_loss=compute_loss,
+            processing_class=tok,
             callbacks=callbacks,
         )
+        # Set compute_loss method directly on trainer instance
+        trainer.compute_loss = compute_loss
     else:
         # Create standard Trainer
         trainer = Trainer(
@@ -194,7 +206,7 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
             args=training_args,
             train_dataset=tokenized_train,
             eval_dataset=tokenized_test,
-            tokenizer=tok,
+            processing_class=tok,
             callbacks=callbacks,
         )
     
