@@ -138,7 +138,7 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
         lr_scheduler_type=scheduler_type,
         fp16=True,
         save_strategy="epoch",
-        evaluation_strategy="epoch",
+        eval_strategy="epoch",
         load_best_model_at_end=True,
         metric_for_best_model=metric_for_best_model,
         greater_is_better=(metric_for_best_model == "eval_spearman"),  # Higher is better for Spearman
