@@ -17,15 +17,19 @@ class SpearmanCallback(TrainerCallback):
         self.best_spearman = -1.0
         
     def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+        # Ensure metrics dictionary exists
+        if metrics is None:
+            metrics = {}
+            
         # Get the model from kwargs
         model = kwargs.get("model")
         if model is None:
-            return
+            return metrics
         
         # Run prediction on eval dataset
         trainer = kwargs.get("trainer")
         if trainer is None:
-            return
+            return metrics
             
         predictions = trainer.predict(self.eval_dataset)
         
@@ -57,4 +61,7 @@ class SpearmanCallback(TrainerCallback):
                 # Save trainer state
                 torch.save(args, os.path.join(output_dir, "training_args.bin"))
                 
-                print(f"🔥 New best model saved with Spearman: {current_spearman:.4f}") 
+                print(f"🔥 New best model saved with Spearman: {current_spearman:.4f}")
+                
+        # Return the metrics dict to ensure it's properly updated
+        return metrics 
