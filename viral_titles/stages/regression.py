@@ -184,6 +184,11 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
     # Define callbacks list
     callbacks = [EarlyStoppingCallback(early_stopping_patience=patience)]
     
+    # Add Spearman callback if requested
+    if use_spearman_metric:
+        spearman_callback = SpearmanCallback(tokenized_test, tok)
+        callbacks.append(spearman_callback)
+    
     # Create custom compute_loss function for pairwise loss if needed
     if use_pairwise:
 
@@ -209,11 +214,6 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
             processing_class=tok,
             callbacks=callbacks,
         )
-    
-    # Add Spearman callback if requested
-    if use_spearman_metric:
-        spearman_callback = SpearmanCallback(tokenized_test, tok)
-        trainer.add_callback(spearman_callback)
     
     # Train the model
     trainer.train()
