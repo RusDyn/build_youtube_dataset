@@ -179,7 +179,7 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
         lr_scheduler_type=scheduler_type,
         fp16=True,
         fp16_full_eval=True,  # Safer mixed-precision eval
-        gradient_accumulation_steps=2,  # Effectively doubles batch size without OOM risk
+        gradient_accumulation_steps=4,  # Effectively doubles batch size without OOM risk
         max_grad_norm=1.0,  # Gradient clipping to avoid NaN
         save_strategy="epoch",
         eval_strategy="epoch",

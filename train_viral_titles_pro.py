@@ -77,9 +77,9 @@ def main():
     )
     
     # Essential arguments
-    parser.add_argument("--epochs", type=int, default=3, help="Number of training epochs")
-    parser.add_argument("--bs", type=int, default=32, help="Batch size for training")
-    parser.add_argument("--lr", type=float, default=2e-5, help="Learning rate")
+    parser.add_argument("--epochs", type=int, default=5, help="Number of training epochs")
+    parser.add_argument("--bs", type=int, default=64, help="Batch size for training")
+    parser.add_argument("--lr", type=float, default=5e-5, help="Learning rate")
     parser.add_argument(
         "--model_ckpt", type=str, default="microsoft/deberta-v3-base", 
         help="Model checkpoint to use"
