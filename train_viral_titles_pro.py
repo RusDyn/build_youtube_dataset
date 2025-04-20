@@ -81,7 +81,7 @@ def main():
     parser.add_argument("--bs", type=int, default=32, help="Batch size for training")
     parser.add_argument("--lr", type=float, default=2e-5, help="Learning rate")
     parser.add_argument(
-        "--model_ckpt", type=str, default="sentence-transformers/all-mpnet-base-v2", 
+        "--model_ckpt", type=str, default="microsoft/deberta-v3-base", 
         help="Model checkpoint to use"
     )
     parser.add_argument(
