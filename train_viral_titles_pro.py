@@ -81,7 +81,9 @@ def main():
     parser.add_argument("--bs", type=int, default=64, help="Batch size for training")
     parser.add_argument("--lr", type=float, default=5e-5, help="Learning rate")
     parser.add_argument(
-        "--model_ckpt", type=str, default="microsoft/deberta-v3-base", 
+        "--model_ckpt", type=str, 
+        #default="microsoft/deberta-v3-base", 
+        default="microsoft/mdeberta-v3-base",
         help="Model checkpoint to use"
     )
     parser.add_argument(
@@ -98,6 +100,8 @@ def main():
                         help='Early stopping patience')
     parser.add_argument('--enhanced', action='store_true',
                         help='Use all enhancements (balanced dataset + pairwise loss + spearman metric)')
+    parser.add_argument('--accumulation', type=int, default=4,
+                        help='Gradient accumulation steps')
     
     args = parser.parse_args()
     
@@ -130,7 +134,8 @@ def main():
             use_pairwise=args.use_pairwise,
             use_spearman_metric=args.use_spearman,
             patience=args.patience,
-            dataset_path=args.dataset
+            dataset_path=args.dataset,
+            gradient_accumulation_steps=args.accumulation
         )
     elif args.stage == "regression_description":
         stage_regression(
@@ -145,7 +150,8 @@ def main():
             use_pairwise=args.use_pairwise,
             use_spearman_metric=args.use_spearman,
             patience=args.patience,
-            dataset_path=args.dataset
+            dataset_path=args.dataset,
+            gradient_accumulation_steps=args.accumulation
         )
     
     #elif args.stage == "sft":
@@ -171,7 +177,8 @@ def main():
             use_pairwise=args.use_pairwise,
             use_spearman_metric=args.use_spearman,
             patience=args.patience,
-            dataset_path=args.dataset
+            dataset_path=args.dataset,
+            gradient_accumulation_steps=args.accumulation
         )
         stage_regression(
             target="description", 
@@ -185,7 +192,8 @@ def main():
             use_pairwise=args.use_pairwise,
             use_spearman_metric=args.use_spearman,
             patience=args.patience,
-            dataset_path=args.dataset
+            dataset_path=args.dataset,
+            gradient_accumulation_steps=args.accumulation
         )
         #stage_sft(epochs=args.epochs, bs=args.bs)
         #stage_reward(epochs=args.epochs)

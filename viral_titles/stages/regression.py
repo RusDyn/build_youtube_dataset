@@ -55,7 +55,7 @@ def compute_metrics(eval_pred):
 def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-transformers/all-mpnet-base-v2", 
                     lr=2e-5, scheduler_type="linear", weight_decay=0.01, warmup_ratio=0.1, 
                     use_pairwise=True, use_spearman_metric=True, patience=2,
-                    dataset_path="hf_dataset_reg"):
+                    dataset_path="hf_dataset_reg", gradient_accumulation_steps=4):
     """
     Train a regression model to predict viral_score from title or description.
     
@@ -72,11 +72,13 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
         use_spearman_metric: Use Spearman correlation as metric for best model (default: True)
         patience: Number of evaluation calls with no improvement after which training will be stopped (default: 2)
         dataset_path: Path to the dataset
+        gradient_accumulation_steps: Number of steps to accumulate gradients before optimizer step (default: 4)
     """
     print(f"▶️ Training regression model for: {target}")
     print(f"   Model: {model_ckpt}, Epochs: {epochs}, Batch size: {bs}")
     print(f"   Learning rate: {lr}, Scheduler: {scheduler_type}")
     print(f"   Weight decay: {weight_decay}, Warmup ratio: {warmup_ratio}")
+    print(f"   Gradient accumulation steps: {gradient_accumulation_steps}")
     print(f"   Using pairwise loss: {use_pairwise}")
     print(f"   Using Spearman metric for best model: {use_spearman_metric}")
     print(f"   Early stopping patience: {patience}")
@@ -179,7 +181,7 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
         lr_scheduler_type=scheduler_type,
         fp16=True,
         fp16_full_eval=True,  # Safer mixed-precision eval
-        gradient_accumulation_steps=4,  # Effectively doubles batch size without OOM risk
+        gradient_accumulation_steps=gradient_accumulation_steps,  # Use the provided value
         max_grad_norm=1.0,  # Gradient clipping to avoid NaN
         save_strategy="epoch",
         eval_strategy="epoch",
