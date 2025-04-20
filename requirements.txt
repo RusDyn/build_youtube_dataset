@@ -10,3 +10,5 @@ sentence-transformers
 boto3
 tiktoken
 accelerate
+matplotlib
+seaborn

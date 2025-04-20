@@ -129,8 +129,9 @@ def stage_prep():
 def stage_prep_regression():
     """
     Prepare a dataset specifically for regression models with full range of viral scores.
+    Uses stratified sampling to ensure better distribution across viral score ranges.
     """
-    print("▶️ Preparing regression dataset with full viral score distribution")
+    print("▶️ Preparing regression dataset with balanced viral score distribution")
     fetch_duckdb()
     con = duckdb.connect(DB_PATH)
     
@@ -141,32 +142,81 @@ def stage_prep_regression():
             COUNT(*) FILTER (WHERE viral_score >= 0.05 AND viral_score < 0.10) as vs_05_10,
             COUNT(*) FILTER (WHERE viral_score >= 0.10 AND viral_score < 0.15) as vs_10_15,
             COUNT(*) FILTER (WHERE viral_score >= 0.15 AND viral_score < 0.20) as vs_15_20,
-            COUNT(*) FILTER (WHERE viral_score >= 0.20) as vs_20_plus,
+            COUNT(*) FILTER (WHERE viral_score >= 0.20 AND viral_score < 0.21) as vs_20_21,
+            COUNT(*) FILTER (WHERE viral_score >= 0.21) as vs_21_plus,
             COUNT(*) FILTER (WHERE viral_score IS NOT NULL) as total_with_score
         FROM youtube_videos
         WHERE title IS NOT NULL AND description IS NOT NULL
     """).fetchone()
     
-    print(f"  Viral score distribution:")
+    print(f"  Original viral score distribution:")
     print(f"    < 0.05: {viral_dist[0]:,}")
     print(f"    0.05 - 0.10: {viral_dist[1]:,}")
     print(f"    0.10 - 0.15: {viral_dist[2]:,}")
     print(f"    0.15 - 0.20: {viral_dist[3]:,}")
-    print(f"    ≥ 0.20: {viral_dist[4]:,}")
-    print(f"    Total with scores: {viral_dist[5]:,}")
+    print(f"    0.20 - 0.21: {viral_dist[4]:,}")
+    print(f"    ≥ 0.21: {viral_dist[5]:,}")
+    print(f"    Total with scores: {viral_dist[6]:,}")
     
-    # Query all data without a viral score threshold
-    df = con.execute("""
-        SELECT title, description, viral_score
-        FROM youtube_videos
-        WHERE title IS NOT NULL 
-          AND description IS NOT NULL
-          AND viral_score IS NOT NULL
-        ORDER BY random()
-    """).df()
+    # Define target number of samples per bucket (aiming for more balanced distribution)
+    # We'll collect a maximum of samples_per_bucket from each range
+    # For the 0.20-0.21 bucket that dominates the dataset, we'll undersample
+    samples_per_bucket = 8000
+    
+    # Query data in stratified manner to get more balanced distribution
+    df_segments = []
+    
+    # Define viral score buckets and fetch balanced samples
+    viral_buckets = [
+        (0.00, 0.05),
+        (0.05, 0.10),
+        (0.10, 0.15),
+        (0.15, 0.18),
+        (0.18, 0.20),
+        (0.20, 0.205),  # Split the dominant 0.20-0.21 range
+        (0.205, 0.21),
+        (0.21, 0.25),
+        (0.25, 1.00)
+    ]
+    
+    print("\n  Collecting stratified samples:")
+    
+    for low, high in viral_buckets:
+        # Query segment with specific viral score range
+        segment_df = con.execute(f"""
+            SELECT title, description, viral_score
+            FROM youtube_videos
+            WHERE title IS NOT NULL 
+              AND description IS NOT NULL
+              AND viral_score >= {low}
+              AND viral_score < {high}
+            ORDER BY random()
+            LIMIT {samples_per_bucket}
+        """).df()
+        
+        df_segments.append(segment_df)
+        print(f"    {low:.3f} - {high:.3f}: {len(segment_df):,} samples")
+    
+    # Combine all segments
+    df = pd.concat(df_segments, ignore_index=True)
     con.close()
     
-    print(f"✓ Loaded {len(df):,} rows for regression training (full viral score range)")
+    print(f"\n✓ Created balanced dataset with {len(df):,} rows for regression training")
+    
+    # Report distribution in final dataset
+    df['bucket'] = pd.cut(df['viral_score'], 
+                          bins=[0, 0.05, 0.10, 0.15, 0.20, 0.21, 0.25, 1.0],
+                          labels=['0.00-0.05', '0.05-0.10', '0.10-0.15', '0.15-0.20', 
+                                 '0.20-0.21', '0.21-0.25', '0.25-1.00'])
+    
+    bucket_counts = df['bucket'].value_counts().sort_index()
+    print("\n  Final viral score distribution:")
+    for bucket, count in bucket_counts.items():
+        percentage = 100 * count / len(df)
+        print(f"    {bucket}: {count:,} samples ({percentage:.2f}%)")
+    
+    # Drop the temporary bucket column
+    df = df.drop(columns=['bucket'])
     
     # Sanity check for duplicates
     n_dupes = df.duplicated(subset=["title", "description"]).sum()

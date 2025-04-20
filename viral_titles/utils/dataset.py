@@ -111,7 +111,11 @@ def analyze_viral_score_distribution(dataset_path="hf_dataset_reg"):
 
 def fix_biased_dataset(dataset_path="hf_dataset_reg", output_path="hf_dataset_reg_fixed"):
     """
-    Fix a dataset with biased viral scores by adding small Gaussian noise to the labels.
+    Fix a dataset with biased viral scores using multiple techniques:
+    1. Stratified resampling - undersample over-represented bins and oversample rare bins
+    2. Add controlled noise to break clusters but preserve overall ranking
+    3. Ensure more uniform distribution across the viral score range
+    
     Returns the path to the fixed dataset.
     """
     print("🔧 Fixing biased viral score distribution...")
@@ -119,20 +123,156 @@ def fix_biased_dataset(dataset_path="hf_dataset_reg", output_path="hf_dataset_re
     # Load the dataset
     dsd = DatasetDict.load_from_disk(dataset_path)
     
-    # Add small Gaussian noise to each score
-    def add_noise_to_scores(example):
-        # Add small Gaussian noise (mean=0, std=0.0025) to the viral_score
-        # This maintains the general ranking but breaks exact value clusters
-        noise = random.gauss(0, 0.0025)  # Small standard deviation to maintain original score roughly
-        
-        # Ensure we don't go below 0 or above 1
-        new_score = max(0, min(1, float(example["viral_score"]) + noise))
-        return {"viral_score": new_score}
+    # Get all train examples
+    train_examples = list(dsd["train"])
+    total_examples = len(train_examples)
     
-    # Apply the transformation
+    # Analyze the distribution before fixing
+    train_scores = [float(ex["viral_score"]) for ex in train_examples]
+    
+    # Define score bins for stratification
+    bins = [
+        (0.0, 0.05),
+        (0.05, 0.10),
+        (0.10, 0.15),
+        (0.15, 0.18),
+        (0.18, 0.20),
+        (0.20, 0.205),
+        (0.205, 0.21),
+        (0.21, 0.25),
+        (0.25, 1.0)
+    ]
+    
+    # Group examples by bin
+    binned_examples = {i: [] for i in range(len(bins))}
+    
+    for ex in train_examples:
+        score = float(ex["viral_score"])
+        for i, (low, high) in enumerate(bins):
+            if low <= score < high:
+                binned_examples[i].append(ex)
+                break
+    
+    # Print initial distribution
+    print("\nCurrent distribution by bin:")
+    for i, (low, high) in enumerate(bins):
+        bin_count = len(binned_examples[i])
+        bin_pct = 100 * bin_count / total_examples
+        print(f"  Bin {i} ({low:.3f}-{high:.3f}): {bin_count} examples ({bin_pct:.2f}%)")
+    
+    # Target counts for each bin - more balanced but still preserving natural distribution
+    # We want to undersample the dominant bins but still keep the distribution somewhat natural
+    target_counts = {}
+    
+    # Identify overrepresented bins (typically around 0.20)
+    dominant_bins = []
+    for i, examples in binned_examples.items():
+        if len(examples) > total_examples * 0.15:  # If bin has >15% of all examples
+            dominant_bins.append(i)
+    
+    # Define target distribution based on observed distribution
+    # For overrepresented bins, cap at a percentage of total samples
+    # For underrepresented bins, ensure minimum representation
+    total_target = 0
+    for i, examples in binned_examples.items():
+        if i in dominant_bins:
+            # Cap dominant bins at 15% 
+            target_counts[i] = min(len(examples), int(total_examples * 0.15))
+        else:
+            # For other bins, ensure at least 2000 examples or what's available
+            target_counts[i] = max(min(len(examples), 8000), 2000)
+        
+        # Update if bin doesn't have enough examples
+        if target_counts[i] > len(examples):
+            target_counts[i] = len(examples)
+        
+        total_target += target_counts[i]
+    
+    # Create resampled examples
+    resampled_examples = []
+    
+    print("\nResampling to target distribution:")
+    for i, (low, high) in enumerate(bins):
+        bin_examples = binned_examples[i]
+        target = target_counts[i]
+        
+        # Skip empty bins
+        if not bin_examples:
+            print(f"  Bin {i} ({low:.3f}-{high:.3f}): Empty bin, skipping")
+            continue
+        
+        # If target > available examples, sample with replacement
+        if target > len(bin_examples):
+            sampled = random.choices(bin_examples, k=target)
+        # If target < available examples, sample without replacement
+        else:
+            sampled = random.sample(bin_examples, k=target)
+        
+        # Report on sampling
+        print(f"  Bin {i} ({low:.3f}-{high:.3f}): {len(bin_examples)} → {len(sampled)} examples")
+        
+        # Add sampled examples to result list
+        resampled_examples.extend(sampled)
+    
+    # Apply controlled noise to break clusters while preserving ranking
+    def add_controlled_noise(examples):
+        result = []
+        for ex in examples:
+            # Copy the example to avoid modifying the original
+            new_ex = dict(ex)
+            
+            # Get bin information for appropriate noise scaling
+            score = float(ex["viral_score"])
+            bin_idx = None
+            bin_width = None
+            
+            for i, (low, high) in enumerate(bins):
+                if low <= score < high:
+                    bin_idx = i
+                    bin_width = high - low
+                    break
+            
+            if bin_idx is not None:
+                # Scale noise based on bin width, with added stochasticity
+                # Use smaller noise for narrow bins, larger for wide bins
+                # Max noise is 30% of bin width to avoid distorting overall ranking
+                noise_scale = bin_width * (0.15 + random.random() * 0.15)
+                
+                # Add noise with controlled sign to maintain distribution shape
+                # For the dominant 0.20 bin, bias noise slightly negative to reduce clustering
+                if 0.199 < score < 0.201:
+                    noise = random.random() * noise_scale * -1.0  # Slight negative bias
+                else:
+                    noise = (random.random() - 0.5) * noise_scale * 2.0  # Balanced noise
+                
+                # Apply noise and ensure within valid range [0, 1]
+                new_score = max(0.0, min(1.0, score + noise))
+                
+                # Ensure we don't introduce new clusters
+                if abs(new_score - round(new_score, 4)) < 0.0001:
+                    new_score += random.random() * 0.0001  # Break exact values
+                
+                new_ex["viral_score"] = float(new_score)
+            
+            result.append(new_ex)
+        return result
+    
+    # Apply the noise transformation
+    print("\nApplying controlled noise to break clusters...")
+    noisy_examples = add_controlled_noise(resampled_examples)
+    
+    # Create new datasets
+    new_train_dataset = dsd["train"].from_list(noisy_examples)
+    
+    # Also apply minimal noise to test set to avoid exact values
+    test_examples = list(dsd["test"])
+    noisy_test = add_controlled_noise(test_examples)
+    new_test_dataset = dsd["test"].from_list(noisy_test)
+    
+    # Create the fixed dataset
     dsd_fixed = DatasetDict({
-        "train": dsd["train"].map(add_noise_to_scores),
-        "test": dsd["test"].map(add_noise_to_scores)
+        "train": new_train_dataset,
+        "test": new_test_dataset
     })
     
     # Save the fixed dataset

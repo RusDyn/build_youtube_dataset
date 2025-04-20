@@ -89,7 +89,25 @@ def main():
         help="Dataset path for analysis or fixing"
     )
     
+    # Add enhanced regression options
+    parser.add_argument('--use-pairwise', action='store_true', 
+                        help='Use pairwise ranking loss instead of MSE')
+    parser.add_argument('--use-spearman', action='store_true',
+                        help='Use Spearman correlation as metric for best model')
+    parser.add_argument('--patience', type=int, default=2,
+                        help='Early stopping patience')
+    parser.add_argument('--enhanced', action='store_true',
+                        help='Use all enhancements (balanced dataset + pairwise loss + spearman metric)')
+    
     args = parser.parse_args()
+    
+    # Configure Windows console if needed
+    configure_windows_console()
+    
+    # Handle the enhanced mode by setting all improvements
+    if args.enhanced:
+        args.use_pairwise = True
+        args.use_spearman = True
     
     print(f"Running stage: {args.stage}")
     
@@ -109,8 +127,9 @@ def main():
             scheduler_type="linear",
             weight_decay=0.01,
             warmup_ratio=0.1,
-            use_pairwise=False,
-            use_spearman_metric=False
+            use_pairwise=args.use_pairwise,
+            use_spearman_metric=args.use_spearman,
+            patience=args.patience
         )
     elif args.stage == "regression_description":
         stage_regression(
@@ -122,8 +141,9 @@ def main():
             scheduler_type="linear",
             weight_decay=0.01,
             warmup_ratio=0.1,
-            use_pairwise=False,
-            use_spearman_metric=False
+            use_pairwise=args.use_pairwise,
+            use_spearman_metric=args.use_spearman,
+            patience=args.patience
         )
     
     #elif args.stage == "sft":
@@ -146,8 +166,9 @@ def main():
             scheduler_type="linear",
             weight_decay=0.01,
             warmup_ratio=0.1,
-            use_pairwise=False,
-            use_spearman_metric=False
+            use_pairwise=args.use_pairwise,
+            use_spearman_metric=args.use_spearman,
+            patience=args.patience
         )
         stage_regression(
             target="description", 
@@ -158,8 +179,9 @@ def main():
             scheduler_type="linear",
             weight_decay=0.01,
             warmup_ratio=0.1,
-            use_pairwise=False,
-            use_spearman_metric=False
+            use_pairwise=args.use_pairwise,
+            use_spearman_metric=args.use_spearman,
+            patience=args.patience
         )
         #stage_sft(epochs=args.epochs, bs=args.bs)
         #stage_reward(epochs=args.epochs)

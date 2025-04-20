@@ -16,10 +16,12 @@ from transformers import (
 
 from ..utils import SpearmanCallback, analyze_viral_score_distribution, fix_biased_dataset
 from ..config import MAX_LEN_TITLE, MAX_LEN_DESC
-
+# Import early stopping callback
+from transformers import EarlyStoppingCallback
+    
 def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-transformers/all-mpnet-base-v2", 
                     lr=2e-5, scheduler_type="linear", weight_decay=0.01, warmup_ratio=0.1, 
-                    use_pairwise=False, use_spearman_metric=False):
+                    use_pairwise=True, use_spearman_metric=True, patience=2):
     """
     Train a regression model to predict viral_score from title or description.
     
@@ -32,8 +34,9 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
         scheduler_type: Learning rate scheduler
         weight_decay: Weight decay for regularization
         warmup_ratio: Portion of training to use for warmup
-        use_pairwise: Use pairwise ranking loss instead of MSE
-        use_spearman_metric: Use Spearman correlation as metric for best model
+        use_pairwise: Use pairwise ranking loss instead of MSE (default: True)
+        use_spearman_metric: Use Spearman correlation as metric for best model (default: True)
+        patience: Number of evaluation calls with no improvement after which training will be stopped (default: 2)
     """
     print(f"▶️ Training regression model for: {target}")
     print(f"   Model: {model_ckpt}, Epochs: {epochs}, Batch size: {bs}")
@@ -41,6 +44,7 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
     print(f"   Weight decay: {weight_decay}, Warmup ratio: {warmup_ratio}")
     print(f"   Using pairwise loss: {use_pairwise}")
     print(f"   Using Spearman metric for best model: {use_spearman_metric}")
+    print(f"   Early stopping patience: {patience}")
     
     # First, analyze the viral score distribution to check for bias
     bias_detected, _ = analyze_viral_score_distribution("hf_dataset_reg")
@@ -137,6 +141,9 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
         learning_rate=lr,
         lr_scheduler_type=scheduler_type,
         fp16=True,
+        fp16_full_eval=True,  # Safer mixed-precision eval
+        gradient_accumulation_steps=2,  # Effectively doubles batch size without OOM risk
+        max_grad_norm=1.0,  # Gradient clipping to avoid NaN
         save_strategy="epoch",
         eval_strategy="epoch",
         load_best_model_at_end=True,
@@ -153,6 +160,10 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
         weight_decay=weight_decay,
         warmup_ratio=warmup_ratio
     )
+    
+
+    # Define callbacks list
+    callbacks = [EarlyStoppingCallback(early_stopping_patience=patience)]
     
     # Create custom compute_loss function for pairwise loss if needed
     if use_pairwise:
@@ -174,6 +185,7 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
             eval_dataset=tokenized_test,
             tokenizer=tok,
             compute_loss=compute_loss,
+            callbacks=callbacks,
         )
     else:
         # Create standard Trainer
@@ -183,6 +195,7 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
             train_dataset=tokenized_train,
             eval_dataset=tokenized_test,
             tokenizer=tok,
+            callbacks=callbacks,
         )
     
     # Add Spearman callback if requested

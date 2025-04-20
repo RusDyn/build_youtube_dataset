@@ -13,7 +13,9 @@ from youtube_dataset.config import NOW_UTC
 
 def add_viral(df):
     """
-    Add viral score metrics to the DataFrame.
+    Add viral score metrics to the DataFrame with enhanced diversity.
+    Uses non-linear transformations and controlled randomness to create
+    a more continuous distribution of viral scores.
     
     Args:
         df (pd.DataFrame): Input DataFrame with video data
@@ -51,26 +53,136 @@ def add_viral(df):
     df.loc[:, "likesPerHr"] = df["likeCount"] / age
     df.loc[:, "commentsPerHr"] = df["commentCount"] / age
     
-    # Normalize engagement metrics by the maximum value
+    # Use non-linear transformations for better distribution
+    # Log transformation helps with heavy-tailed metrics and creates more diversity
     for c in ["viewsPerHr", "likesPerHr", "commentsPerHr"]:
-        m = df[c].max()
-        df.loc[:, c + "_n"] = df[c] / m if m else 0
+        # Add 1 to avoid log(0) and apply log transformation
+        df.loc[:, c + "_log"] = np.log1p(df[c])
     
-    # Calculate rank score (inverted and normalized)
-    rank_score = (51 - df["rank"].fillna(50)) / 50
-    df.loc[:, "rankScore_n"] = rank_score.clip(0, 1)
+    # Non-linear normalization using sigmoid/tanh functions
+    # This spreads values more evenly across the range
+    for c in ["viewsPerHr_log", "likesPerHr_log", "commentsPerHr_log"]:
+        # Get statistics for robust scaling
+        median = df[c].median()
+        q75 = df[c].quantile(0.75)
+        q25 = df[c].quantile(0.25)
+        scale = (q75 - q25) if q75 > q25 else 1
+        
+        # Scale using median and IQR for robustness to outliers
+        scaled = (df[c] - median) / scale
+        
+        # Apply sigmoid to get values between 0-1 with better distribution
+        df.loc[:, c.replace("_log", "_n")] = 1 / (1 + np.exp(-scaled))
     
-    # Calculate recency boost
-    recency_boost = 1 / (1 + age)
+    # Calculate rank score using non-linear transformation
+    rank = df["rank"].fillna(50)
+    # Inverse and normalize using sigmoid instead of linear scaling
+    rank_normalized = 1 - (rank / 50)  # Higher ranks get lower scores (0 to 1)
+    # Apply sigmoid for non-linear transformation
+    df.loc[:, "rankScore_n"] = 1 / (1 + np.exp(-6 * (rank_normalized - 0.5)))
     
-    # Calculate final viral score as weighted sum of normalized metrics
-    df.loc[:, "viral_score"] = (
-        0.45 * df["viewsPerHr_n"] +
+    # Calculate recency boost using exponential decay
+    # Creates more natural falloff with age
+    recency_boost = np.exp(-age / 24)  # Decay constant set to 24 hours
+    df.loc[:, "recency_n"] = recency_boost
+    
+    # Calculate engagement ratio (likes/views) as additional signal
+    # Helps distinguish truly engaging content
+    likes_to_views = df["likeCount"] / df["viewCount"].replace(0, 1)
+    df.loc[:, "engagementRatio_n"] = 1 / (1 + np.exp(-10 * (likes_to_views - 0.05)))
+    
+    # Calculate viral potential score based on early performance
+    early_viral = np.sqrt(df["viewsPerHr_n"] * df["likesPerHr_n"])
+    df.loc[:, "earlyViral_n"] = early_viral
+    
+    # Apply more complex weighting with additional metrics
+    raw_score = (
+        0.35 * df["viewsPerHr_n"] +
         0.25 * df["likesPerHr_n"] +
-        0.10 * df["commentsPerHr_n"] +
-        0.20 * df["rankScore_n"] +
-        0.10 * recency_boost
-    ).round(4).fillna(0)
+        0.15 * df["commentsPerHr_n"] +
+        0.15 * df["rankScore_n"] +
+        0.10 * df["recency_n"] +
+        0.10 * df["engagementRatio_n"] +
+        0.05 * df["earlyViral_n"]
+    )
+    
+    # Normalize the raw score using percentiles for better distribution
+    viral_percentile = raw_score.rank(pct=True)
+    
+    # Apply non-linear transformation to emphasize differences and create smoother distribution
+    # Power transformation with small exponent helps differentiate videos
+    alpha = 1.5  # Values > 1 emphasize high viral scores
+    viral_score_base = viral_percentile ** alpha
+    
+    # Add controlled random noise (unique per row) to break ties and create diversity
+    # Use 5% max noise based on rank order to maintain overall ranking
+    np.random.seed(42)  # For reproducibility
+    noise = np.random.rand(len(df)) * 0.05 * (1 - viral_score_base)
+    
+    # Final viral score with noise but no rounding to avoid clustering
+    df.loc[:, "viral_score"] = np.clip(viral_score_base + noise, 0, 1)
+    
+    # Print distribution statistics for each normalized metric
+    print("\n📊 Distribution of normalized metrics used in viral score:")
+    
+    normalized_metrics = [
+        "viewsPerHr_n", "likesPerHr_n", "commentsPerHr_n", 
+        "rankScore_n", "recency_n", "engagementRatio_n", "earlyViral_n"
+    ]
+    
+    # Get basic statistics for each metric
+    stats_df = df[normalized_metrics].describe().T
+    stats_df['null_count'] = df[normalized_metrics].isna().sum()
+    stats_df['null_pct'] = (df[normalized_metrics].isna().sum() / len(df)) * 100
+    stats_df['zeros'] = (df[normalized_metrics] == 0).sum()
+    stats_df['zeros_pct'] = (df[normalized_metrics] == 0).sum() / len(df) * 100
+    
+    # Print formatted statistics
+    print(f"{'Metric':<20} | {'Mean':>8} | {'Std':>8} | {'Min':>8} | {'25%':>8} | {'50%':>8} | {'75%':>8} | {'Max':>8} | {'Nulls %':>8} | {'Zeros %':>8}")
+    print("-" * 120)
+    
+    for metric in normalized_metrics:
+        print(f"{metric:<20} | {stats_df.loc[metric, 'mean']:>8.4f} | {stats_df.loc[metric, 'std']:>8.4f} | "
+              f"{stats_df.loc[metric, 'min']:>8.4f} | {stats_df.loc[metric, '25%']:>8.4f} | "
+              f"{stats_df.loc[metric, '50%']:>8.4f} | {stats_df.loc[metric, '75%']:>8.4f} | "
+              f"{stats_df.loc[metric, 'max']:>8.4f} | {stats_df.loc[metric, 'null_pct']:>8.2f} | "
+              f"{stats_df.loc[metric, 'zeros_pct']:>8.2f}")
+    
+    # Calculate and print correlation matrix between metrics
+    print("\n📈 Correlation matrix between normalized metrics:")
+    corr_matrix = df[normalized_metrics].corr()
+    
+    # Print formatted correlation matrix
+    print(f"{'Metric':<20} |", end="")
+    for metric in normalized_metrics:
+        print(f" {metric[:8]:>8} |", end="")
+    print()
+    print("-" * 120)
+    
+    for row_metric in normalized_metrics:
+        print(f"{row_metric:<20} |", end="")
+        for col_metric in normalized_metrics:
+            print(f" {corr_matrix.loc[row_metric, col_metric]:>8.4f} |", end="")
+        print()
+    
+    # Analyze the distribution of the final viral score
+    print("\n🏆 Final viral_score distribution:")
+    
+    # Create bins and count values in each bin
+    bins = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+    bin_counts = pd.cut(df['viral_score'], bins=bins).value_counts().sort_index()
+    
+    # Calculate percentages
+    bin_percentages = (bin_counts / len(df)) * 100
+    
+    # Print histogram
+    for i, (bin_range, count) in enumerate(bin_counts.items()):
+        percentage = bin_percentages[bin_range]
+        bar_length = int(percentage)
+        print(f"{bin_range}: {count:,} ({percentage:.1f}%) {'█' * bar_length}")
+    
+    # Log information about the score distribution for monitoring
+    logging.info(f"Viral score diversity: unique values: {df['viral_score'].nunique()}/{len(df)}")
     
     return df
 
