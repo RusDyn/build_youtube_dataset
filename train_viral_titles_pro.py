@@ -463,12 +463,19 @@ def stage_rlhf(epochs=3, bs=1):
 
     print("✅ RLHF DPO done ➜ dpo_ckpt/")
 
-def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-transformers/all-MiniLM-L12-v2"):
+def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-transformers/all-MiniLM-L12-v2", lr=2e-5, scheduler_type="linear"):
     """
     Train a regression model to predict viral_score from title or description.
     target: "title" or "description"
+    epochs: number of training epochs
+    bs: batch size
+    model_ckpt: pretrained model to use
+    lr: learning rate
+    scheduler_type: learning rate scheduler (linear, cosine, constant_with_warmup)
     """
     print(f"▶️ Training regression model for: {target}")
+    print(f"   Model: {model_ckpt}, Epochs: {epochs}, Batch size: {bs}")
+    print(f"   Learning rate: {lr}, Scheduler: {scheduler_type}")
     
     # Use the dedicated regression dataset
     dsd = DatasetDict.load_from_disk("hf_dataset_reg")
@@ -532,7 +539,8 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
         num_train_epochs=epochs,
         per_device_train_batch_size=bs,
         per_device_eval_batch_size=bs,
-        learning_rate=2e-5,
+        learning_rate=lr,
+        lr_scheduler_type=scheduler_type,
         fp16=True,
         save_strategy="epoch",
         eval_strategy="epoch",
@@ -540,7 +548,7 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
         report_to=[],
         # Configure progress bar behavior
         disable_tqdm=False,
-        logging_steps=100,
+        logging_steps=500,
         logging_first_step=True,
         logging_nan_inf_filter=True,
         log_level="error",
@@ -599,6 +607,10 @@ if __name__ == "__main__":
     p.add_argument("stage", choices=["prep", "prep_regression", "regression_title", "regression_description", "all"]);
     p.add_argument("--epochs", type=int, default=3);
     p.add_argument("--bs", type=int, default=32);
+    p.add_argument("--lr", type=float, default=2e-5, help="Learning rate");
+    p.add_argument("--scheduler", type=str, default="linear", 
+                   choices=["linear", "cosine", "constant_with_warmup"], 
+                   help="Learning rate scheduler");
     args = p.parse_args(); 
     
     print(f"Running stage: {args.stage}")
@@ -607,11 +619,15 @@ if __name__ == "__main__":
     if args.stage == "prep_regression":
         stage_prep_regression()
     if args.stage == "regression_title":
-        stage_regression(target="title", epochs=args.epochs, bs=args.bs)
+        stage_regression(target="title", epochs=args.epochs, bs=args.bs, 
+                        lr=args.lr, scheduler_type=args.scheduler)
     if args.stage == "regression_description":
-        stage_regression(target="description", epochs=args.epochs, bs=args.bs)
+        stage_regression(target="description", epochs=args.epochs, bs=args.bs,
+                        lr=args.lr, scheduler_type=args.scheduler)
     if args.stage == "all":
         stage_prep()
         stage_prep_regression()
-        stage_regression(target="title", epochs=args.epochs, bs=args.bs)
-        stage_regression(target="description", epochs=args.epochs, bs=args.bs)
+        stage_regression(target="title", epochs=args.epochs, bs=args.bs,
+                        lr=args.lr, scheduler_type=args.scheduler)
+        stage_regression(target="description", epochs=args.epochs, bs=args.bs,
+                        lr=args.lr, scheduler_type=args.scheduler)
