@@ -34,6 +34,24 @@ def compute_loss(model, inputs, return_outputs=False, num_items_in_batch=None):
     loss = pairwise_loss_fct(logits, labels)
     return (loss, outputs) if return_outputs else loss 
 
+def compute_metrics(eval_pred):
+    """
+    Compute metrics for evaluation.
+    """
+    predictions, labels = eval_pred
+    predictions = predictions.squeeze()
+    
+    # Calculate MSE
+    mse = mean_squared_error(labels, predictions)
+    
+    # Calculate Spearman correlation
+    spearman = spearmanr(labels, predictions).correlation
+    
+    return {
+        "eval_mse": mse,
+        "eval_spearman": spearman
+    }
+
 def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-transformers/all-mpnet-base-v2", 
                     lr=2e-5, scheduler_type="linear", weight_decay=0.01, warmup_ratio=0.1, 
                     use_pairwise=True, use_spearman_metric=True, patience=2,
@@ -191,8 +209,6 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
     
     # Create custom compute_loss function for pairwise loss if needed
     if use_pairwise:
-
-        
         # Create Trainer with pairwise loss
         trainer = Trainer(
             model=model,
@@ -201,6 +217,7 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
             eval_dataset=tokenized_test,
             processing_class=tok,
             callbacks=callbacks,
+            compute_metrics=compute_metrics  # Add compute_metrics function
         )
         # Set compute_loss method directly on trainer instance
         trainer.compute_loss = compute_loss
@@ -213,6 +230,7 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
             eval_dataset=tokenized_test,
             processing_class=tok,
             callbacks=callbacks,
+            compute_metrics=compute_metrics  # Add compute_metrics function
         )
     
     # Train the model

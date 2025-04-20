@@ -5,11 +5,10 @@ import os
 import torch
 from transformers import TrainerCallback
 from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
-from scipy.stats import spearmanr
 
 class SpearmanCallback(TrainerCallback):
     """
-    Callback to compute Spearman correlation during evaluation and save the best model.
+    Callback to save the best model based on Spearman correlation.
     """
     def __init__(self, eval_dataset, tokenizer):
         self.eval_dataset = eval_dataset
@@ -17,27 +16,10 @@ class SpearmanCallback(TrainerCallback):
         self.best_spearman = -1.0
         
     def on_evaluate(self, args, state, control, metrics=None, **kwargs):
-        # Get the model from kwargs
-        model = kwargs.get("model")
-        if model is None:
-            return
-        
-        # Run prediction on eval dataset
-        trainer = kwargs.get("trainer")
-        if trainer is None:
+        if metrics is None or "eval_spearman" not in metrics:
             return
             
-        predictions = trainer.predict(self.eval_dataset)
-        
-        # Calculate Spearman correlation
-        y_pred = predictions.predictions.squeeze()
-        y_true = predictions.label_ids
-        
-        current_spearman = spearmanr(y_true, y_pred).correlation
-        
-        # Log the Spearman correlation using trainer's log method
-        # This ensures it's properly integrated into the training state
-        trainer.log({"eval_spearman": current_spearman})
+        current_spearman = metrics["eval_spearman"]
         print(f"Evaluation Spearman: {current_spearman:.4f}")
         
         # Save the best model based on Spearman
@@ -45,7 +27,8 @@ class SpearmanCallback(TrainerCallback):
             self.best_spearman = current_spearman
             
             # Only save if we're the main process
-            if trainer.is_world_process_zero():
+            trainer = kwargs.get("trainer")
+            if trainer and trainer.is_world_process_zero():
                 # Save the model
                 checkpoint_folder = f"{PREFIX_CHECKPOINT_DIR}-best-spearman"
                 output_dir = os.path.join(args.output_dir, checkpoint_folder)
