@@ -8,8 +8,14 @@ import numpy as np
 from datetime import datetime, timezone
 import logging
 from youtube_dataset.config import KEEP_REGIONS
-
 from youtube_dataset.config import NOW_UTC
+
+# Import version information
+try:
+    from youtube_dataset.processing.schema_versions import get_schema_version, get_feature_engineering_config
+    SCHEMA_VERSION_AVAILABLE = True
+except ImportError:
+    SCHEMA_VERSION_AVAILABLE = False
 
 def add_viral(df):
     """
@@ -23,6 +29,13 @@ def add_viral(df):
     Returns:
         pd.DataFrame: DataFrame with added viral score columns
     """
+    # Log schema version if available
+    if SCHEMA_VERSION_AVAILABLE:
+        version = get_schema_version()
+        config = get_feature_engineering_config(version)
+        print(f"Using feature engineering schema version: {version}")
+        print(f"Schema description: {config['description']}")
+    
     # Create a copy of the DataFrame to avoid SettingWithCopyWarning
     df = df.copy()
     
@@ -56,6 +69,8 @@ def add_viral(df):
     # Use non-linear transformations for better distribution
     # Log transformation helps with heavy-tailed metrics and creates more diversity
     for c in ["viewsPerHr", "likesPerHr", "commentsPerHr"]:
+        # Clip values to ensure they're >= 0 before applying log1p
+        df.loc[:, c] = np.clip(df[c], 0, None)
         # Add 1 to avoid log(0) and apply log transformation
         df.loc[:, c + "_log"] = np.log1p(df[c])
     
@@ -84,7 +99,7 @@ def add_viral(df):
     # Calculate recency boost using exponential decay
     # Creates more natural falloff with age
     recency_boost = np.exp(-age / 24)  # Decay constant set to 24 hours
-    df.loc[:, "recency_n"] = recency_boost
+    df.loc[:, "recency_n"] = np.clip(recency_boost, 0, 1)  # Cap values at 1.0
     
     # Calculate engagement ratio (likes/views) as additional signal
     # Helps distinguish truly engaging content

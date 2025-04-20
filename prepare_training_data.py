@@ -29,6 +29,10 @@ try:
     from youtube_dataset.processing.viral_score import add_viral
     from viral_titles.config import DB_PATH, SEED
     from viral_titles.utils import fetch_duckdb
+
+    # Import schema version info if available
+    from youtube_dataset.processing.schema_versions import get_schema_version
+    SCHEMA_VERSION_AVAILABLE = True
 except ImportError as e:
     logging.warning(f"Package import failed: {str(e)}")
     
@@ -390,7 +394,17 @@ def main():
     logger.info(f"Sample data exported to {sample_path}")
     
     logger.info("Training data preparation complete!")
-    logger.info(f"To train the regression model, run: python train_viral_titles_pro.py --stage regression_title --enhanced --dataset {dataset_path}")
+    
+    # Log schema version info
+    if 'SCHEMA_VERSION_AVAILABLE' in globals() and SCHEMA_VERSION_AVAILABLE:
+        try:
+            version = get_schema_version()
+            logger.info(f"Feature engineering schema version: {version}")
+            logger.info("This version is documented in youtube_dataset/processing/schema_versions.py")
+        except Exception as e:
+            logger.warning(f"Could not retrieve schema version: {e}")
+    
+    logger.info("To train the regression model, run: python train_viral_titles_pro.py --stage regression_title --enhanced --dataset hf_dataset_reg_improved")
     
 if __name__ == "__main__":
     main() 
