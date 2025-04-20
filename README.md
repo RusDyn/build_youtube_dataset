@@ -135,6 +135,39 @@ The script supports several command line options:
   python youtube_dataset_builder.py --force-download
   ```
 
+## Preparing Training Data
+
+The package includes functionality to prepare training data for viral title prediction models:
+
+```
+python prepare_training_data.py
+```
+
+This script:
+1. Loads YouTube video data from the DuckDB database
+2. Calculates improved viral scores using enhanced algorithms
+3. Analyzes viral score distribution and creates visualization plots
+4. Creates a balanced dataset using stratified sampling across viral score ranges
+5. Exports the dataset in Hugging Face format for regression model training
+
+### Training Data Outputs
+
+The script generates several outputs:
+
+- `analysis/viral_score_distribution.png`: Distribution plot of viral scores
+- `analysis/correlation_heatmap.png`: Correlation matrix of viral metrics
+- `analysis/sample_with_scores.csv`: Sample dataset with calculated scores
+- `analysis/sample_training_data.csv`: Sample of the balanced training data
+- `hf_dataset_reg_improved/`: Hugging Face dataset for regression training
+
+### Next Steps
+
+After preparing the training data, you can train a regression model using:
+
+```
+python train_viral_titles_pro.py --stage regression_title --enhanced --dataset hf_dataset_reg_improved
+```
+
 ## Requirements
 
 - Python 3.6+
