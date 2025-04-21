@@ -4,12 +4,20 @@ Ensemble models for combining predictions from multiple sources.
 import os
 import numpy as np
 import torch
-from sklearn.linear_model import Ridge
-from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.linear_model import Ridge, ElasticNet
+from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
 from sklearn.model_selection import cross_val_score
 from scipy.stats import spearmanr
 from tqdm import tqdm
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
+from sklearn.svm import SVR
+# Add more advanced features
+from sklearn.decomposition import PCA, TruncatedSVD
+from sklearn.preprocessing import StandardScaler
+            # Try multiple meta-models and select the best
+from sklearn.linear_model import Ridge, ElasticNet
+from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
+
 
 from .openai_embeddings import batch_get_embeddings
 
@@ -111,7 +119,7 @@ class EnsembleViralPredictor:
         X_meta = np.column_stack(all_predictions)
         
         if self.use_openai:
-            # Apply dimensionality reduction to OpenAI embeddings
+            # Apply dimensionality reduction and extract features from OpenAI embeddings
             openai_features = np.array(openai_embeddings)
             
             # Add basic statistical features from embeddings
@@ -119,14 +127,39 @@ class EnsembleViralPredictor:
             emb_std = np.std(openai_features, axis=1, keepdims=True)
             emb_max = np.max(openai_features, axis=1, keepdims=True)
             emb_min = np.min(openai_features, axis=1, keepdims=True)
+            emb_median = np.median(openai_features, axis=1, keepdims=True)
+            emb_q25 = np.percentile(openai_features, 25, axis=1, keepdims=True)
+            emb_q75 = np.percentile(openai_features, 75, axis=1, keepdims=True)
+            emb_skew = np.nan_to_num(((emb_mean - emb_median) * 3) / (emb_std + 1e-8))  # Approximate skewness
+            emb_kurtosis = np.nan_to_num(((emb_q75 - emb_q25) / (2 * (emb_std + 1e-8))))  # Approximate kurtosis
             
-            # Add compressed features from embeddings
-            from sklearn.decomposition import PCA
-            pca = PCA(n_components=50)
-            emb_pca = pca.fit_transform(openai_features)
+
+            # Standardize features for better decomposition
+            scaler = StandardScaler()
+            openai_scaled = scaler.fit_transform(openai_features)
+            
+            # Apply PCA 
+            pca = PCA(n_components=min(50, openai_features.shape[1], openai_features.shape[0]))
+            try:
+                emb_pca = pca.fit_transform(openai_scaled)
+                print(f"PCA explained variance: {sum(pca.explained_variance_ratio_):.4f}")
+            except Exception as e:
+                print(f"PCA failed: {e}, using SVD instead")
+                # Fallback to SVD if PCA fails
+                svd = TruncatedSVD(n_components=min(50, openai_features.shape[1], openai_features.shape[0]-1))
+                emb_pca = svd.fit_transform(openai_scaled)
+                print(f"SVD explained variance: {sum(svd.explained_variance_ratio_):.4f}")
             
             # Combine all features
-            X_meta = np.hstack([X_meta, emb_mean, emb_std, emb_max, emb_min, emb_pca])
+            openai_meta_features = np.hstack([
+                emb_mean, emb_std, emb_max, emb_min, emb_median, 
+                emb_q25, emb_q75, emb_skew, emb_kurtosis, emb_pca
+            ])
+            
+            print(f"OpenAI meta features shape: {openai_meta_features.shape}")
+            
+            # Combine transformer predictions with OpenAI features
+            X_meta = np.hstack([X_meta, openai_meta_features])
         
         print(f"Meta-model input shape: {X_meta.shape}")
         
@@ -138,30 +171,43 @@ class EnsembleViralPredictor:
         # Normalize labels
         y_meta = (np.array(labels) - label_mean) / label_std
         
-        # Try both Ridge and GradientBoosting, select the best
-        ridge = Ridge(alpha=1.0)
-        gb = GradientBoostingRegressor(n_estimators=100, learning_rate=0.1, max_depth=3)
+
+
+        # Initialize models to try
+        models = {
+            "Ridge": Ridge(alpha=1.0),
+            "ElasticNet": ElasticNet(alpha=0.1, l1_ratio=0.5),
+            "GradientBoosting": GradientBoostingRegressor(n_estimators=100, learning_rate=0.1, max_depth=3),
+            "RandomForest": RandomForestRegressor(n_estimators=100, max_depth=5),
+            "SVR": SVR(kernel='rbf', C=1.0, gamma='scale')
+        }
         
-        ridge_scores = cross_val_score(ridge, X_meta, y_meta, cv=5, 
-                                      scoring=lambda est, X, y: spearmanr(
-                                          est.predict(X), y
-                                      ).correlation)
+        # Evaluate all models
+        best_score = -1
+        best_model_name = None
+        scores = {}
         
-        gb_scores = cross_val_score(gb, X_meta, y_meta, cv=5, 
-                                   scoring=lambda est, X, y: spearmanr(
-                                       est.predict(X), y
-                                   ).correlation)
+        for name, model in models.items():
+            try:
+                scores[name] = cross_val_score(model, X_meta, y_meta, cv=5, 
+                                              scoring=lambda est, X, y: spearmanr(
+                                                  est.predict(X), y
+                                              ).correlation)
+                
+                mean_score = np.mean(scores[name])
+                std_score = np.std(scores[name])
+                
+                print(f"{name} CV Spearman: {mean_score:.4f} ± {std_score:.4f}")
+                
+                if mean_score > best_score:
+                    best_score = mean_score
+                    best_model_name = name
+            except Exception as e:
+                print(f"Error evaluating {name}: {e}")
         
-        print(f"Ridge CV Spearman: {np.mean(ridge_scores):.4f} ± {np.std(ridge_scores):.4f}")
-        print(f"GradientBoosting CV Spearman: {np.mean(gb_scores):.4f} ± {np.std(gb_scores):.4f}")
-        
-        # Select the better model
-        if np.mean(ridge_scores) > np.mean(gb_scores):
-            print("Using Ridge as meta-model")
-            self.meta_model = Ridge(alpha=1.0)
-        else:
-            print("Using GradientBoosting as meta-model")
-            self.meta_model = GradientBoostingRegressor(n_estimators=100, learning_rate=0.1, max_depth=3)
+        # Select the best model
+        print(f"Using {best_model_name} as meta-model with score {best_score:.4f}")
+        self.meta_model = models[best_model_name]
         
         # Fit the selected model on all training data
         self.meta_model.fit(X_meta, y_meta)
@@ -207,6 +253,9 @@ class EnsembleViralPredictor:
             for i, preds in enumerate(all_predictions):
                 ensemble_preds += np.array(preds) * self.weights[i]
             
+            # Ensure predictions are within the valid range [0, 1]
+            ensemble_preds = np.clip(ensemble_preds, 0.0, 1.0)
+            
             return ensemble_preds
         
         # For stacking ensemble
@@ -222,7 +271,7 @@ class EnsembleViralPredictor:
             X_meta = np.column_stack(all_predictions)
             
             if self.use_openai:
-                # Apply dimensionality reduction to OpenAI embeddings
+                # Apply the same feature extraction as in fit_meta_model
                 openai_features = np.array(openai_embeddings)
                 
                 # Add basic statistical features from embeddings
@@ -230,14 +279,34 @@ class EnsembleViralPredictor:
                 emb_std = np.std(openai_features, axis=1, keepdims=True)
                 emb_max = np.max(openai_features, axis=1, keepdims=True)
                 emb_min = np.min(openai_features, axis=1, keepdims=True)
+                emb_median = np.median(openai_features, axis=1, keepdims=True)
+                emb_q25 = np.percentile(openai_features, 25, axis=1, keepdims=True)
+                emb_q75 = np.percentile(openai_features, 75, axis=1, keepdims=True)
+                emb_skew = np.nan_to_num(((emb_mean - emb_median) * 3) / (emb_std + 1e-8))  # Approximate skewness
+                emb_kurtosis = np.nan_to_num(((emb_q75 - emb_q25) / (2 * (emb_std + 1e-8))))  # Approximate kurtosis
                 
-                # Add compressed features from embeddings
-                from sklearn.decomposition import PCA
-                pca = PCA(n_components=50)
-                emb_pca = pca.fit_transform(openai_features)
+    
+                # Standardize features
+                scaler = StandardScaler()
+                openai_scaled = scaler.fit_transform(openai_features)
+                
+                # Apply PCA with fallback to SVD
+                try:
+                    pca = PCA(n_components=min(50, openai_features.shape[1], openai_features.shape[0]))
+                    emb_pca = pca.fit_transform(openai_scaled)
+                except Exception as e:
+                    print(f"PCA failed: {e}, using SVD instead")
+                    svd = TruncatedSVD(n_components=min(50, openai_features.shape[1], openai_features.shape[0]-1))
+                    emb_pca = svd.fit_transform(openai_scaled)
                 
                 # Combine all features
-                X_meta = np.hstack([X_meta, emb_mean, emb_std, emb_max, emb_min, emb_pca])
+                openai_meta_features = np.hstack([
+                    emb_mean, emb_std, emb_max, emb_min, emb_median, 
+                    emb_q25, emb_q75, emb_skew, emb_kurtosis, emb_pca
+                ])
+                
+                # Combine transformer predictions with OpenAI features
+                X_meta = np.hstack([X_meta, openai_meta_features])
             
             # Make predictions with meta-model
             meta_preds = self.meta_model.predict(X_meta)
@@ -246,6 +315,9 @@ class EnsembleViralPredictor:
             if self.label_stats:
                 label_mean, label_std = self.label_stats
                 meta_preds = meta_preds * label_std + label_mean
+            
+            # Ensure predictions are within the valid range [0, 1]
+            meta_preds = np.clip(meta_preds, 0.0, 1.0)
             
             return meta_preds
         
