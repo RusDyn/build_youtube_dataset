@@ -4,7 +4,7 @@ Ensemble models for combining predictions from multiple sources.
 import os
 import numpy as np
 import torch
-from sklearn.linear_model import Ridge, ElasticNet
+from sklearn.linear_model import Ridge, ElasticNet, RidgeCV
 from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
 from sklearn.model_selection import cross_val_score
 from scipy.stats import spearmanr
@@ -14,6 +14,7 @@ from sklearn.svm import SVR
 # Add more advanced features
 from sklearn.decomposition import PCA, TruncatedSVD
 from sklearn.preprocessing import StandardScaler
+from sklearn.feature_selection import SelectKBest, f_regression
             # Try multiple meta-models and select the best
 from sklearn.linear_model import Ridge, ElasticNet
 from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
@@ -166,64 +167,85 @@ class EnsembleViralPredictor:
             # Apply dimensionality reduction and extract features from OpenAI embeddings
             openai_features = np.array(openai_embeddings)
             
-            # Add basic statistical features from embeddings
+            # Add basic statistical features from embeddings - more selectively
             emb_mean = np.mean(openai_features, axis=1, keepdims=True)
             emb_std = np.std(openai_features, axis=1, keepdims=True)
-            emb_max = np.max(openai_features, axis=1, keepdims=True)
-            emb_min = np.min(openai_features, axis=1, keepdims=True)
-            emb_median = np.median(openai_features, axis=1, keepdims=True)
-            emb_q25 = np.percentile(openai_features, 25, axis=1, keepdims=True)
-            emb_q75 = np.percentile(openai_features, 75, axis=1, keepdims=True)
-            emb_skew = np.nan_to_num(((emb_mean - emb_median) * 3) / (emb_std + 1e-8))  # Approximate skewness
-            emb_kurtosis = np.nan_to_num(((emb_q75 - emb_q25) / (2 * (emb_std + 1e-8))))  # Approximate kurtosis
             
-
-            # Standardize features for better decomposition
+            # More advanced but selective features
+            from sklearn.decomposition import PCA, TruncatedSVD
+            from sklearn.preprocessing import StandardScaler
+            from sklearn.feature_selection import SelectKBest, f_regression
+            
+            # Standardize features
             scaler = StandardScaler()
             openai_scaled = scaler.fit_transform(openai_features)
             
-            # Apply PCA 
-            pca = PCA(n_components=min(50, openai_features.shape[1], openai_features.shape[0]))
+            # Apply dimensionality reduction
+            n_components = min(30, openai_features.shape[1], openai_features.shape[0]-1)
             try:
+                pca = PCA(n_components=n_components)
                 emb_pca = pca.fit_transform(openai_scaled)
-                print(f"PCA explained variance: {sum(pca.explained_variance_ratio_):.4f}")
+                explained_var = sum(pca.explained_variance_ratio_)
+                print(f"PCA explained variance: {explained_var:.4f}")
             except Exception as e:
                 print(f"PCA failed: {e}, using SVD instead")
-                # Fallback to SVD if PCA fails
-                svd = TruncatedSVD(n_components=min(50, openai_features.shape[1], openai_features.shape[0]-1))
+                # Fallback to SVD
+                svd = TruncatedSVD(n_components=n_components)
                 emb_pca = svd.fit_transform(openai_scaled)
-                print(f"SVD explained variance: {sum(svd.explained_variance_ratio_):.4f}")
+                explained_var = sum(svd.explained_variance_ratio_)
+                print(f"SVD explained variance: {explained_var:.4f}")
             
-            # Combine all features
-            openai_meta_features = np.hstack([
-                emb_mean, emb_std, emb_max, emb_min, emb_median, 
-                emb_q25, emb_q75, emb_skew, emb_kurtosis, emb_pca
-            ])
+            # Select the most important embedding features for predicting the target
+            # First, concatenate the transformer predictions with PCA features
+            initial_features = np.column_stack([np.column_stack(all_predictions), emb_pca])
             
-            print(f"OpenAI meta features shape: {openai_meta_features.shape}")
+            # Compute label statistics for normalization
+            label_mean = np.mean(labels)
+            label_std = np.std(labels)
+            self.label_stats = (label_mean, label_std)
             
-            # Combine transformer predictions with OpenAI features
-            X_meta = np.hstack([X_meta, openai_meta_features])
+            # Normalize labels
+            y_meta = (np.array(labels) - label_mean) / label_std
+            
+            # Use feature selection to keep only the most predictive features
+            selector = SelectKBest(f_regression, k=min(40, initial_features.shape[1]))
+            selected_features = selector.fit_transform(initial_features, y_meta)
+            
+            # Keep track of which features were selected
+            self.feature_selector = selector
+            self.pca = pca if 'pca' in locals() else svd
+            self.scaler = scaler
+            
+            # Use the selected features
+            X_meta = selected_features
+            
+            print(f"Selected {selected_features.shape[1]} features out of {initial_features.shape[1]}")
+            
+        else:
+            # Without OpenAI, just use the transformer predictions
+            X_meta = np.column_stack(all_predictions)
         
         print(f"Meta-model input shape: {X_meta.shape}")
         
-        # Compute label statistics for normalization
-        label_mean = np.mean(labels)
-        label_std = np.std(labels)
-        self.label_stats = (label_mean, label_std)
-        
-        # Normalize labels
-        y_meta = (np.array(labels) - label_mean) / label_std
-        
-
-
-        # Initialize models to try
+        # Initialize models to try with stronger regularization
         models = {
-            "Ridge": Ridge(alpha=1.0),
-            "ElasticNet": ElasticNet(alpha=0.1, l1_ratio=0.5),
-            "GradientBoosting": GradientBoostingRegressor(n_estimators=100, learning_rate=0.1, max_depth=3),
-            "RandomForest": RandomForestRegressor(n_estimators=100, max_depth=5),
-            "SVR": SVR(kernel='rbf', C=1.0, gamma='scale')
+            "Ridge": Ridge(alpha=10.0),  # Increased regularization
+            "RidgeCV": RidgeCV(alphas=[0.1, 1.0, 10.0, 100.0]),  # Cross-validated alpha
+            "ElasticNet": ElasticNet(alpha=1.0, l1_ratio=0.5),  # Increased alpha
+            "GradientBoosting": GradientBoostingRegressor(
+                n_estimators=100, 
+                learning_rate=0.05,  # Reduced learning rate
+                max_depth=2,  # Reduced depth
+                subsample=0.8,  # Add subsampling
+                min_samples_split=10  # Increase min samples
+            ),
+            "RandomForest": RandomForestRegressor(
+                n_estimators=100, 
+                max_depth=5,
+                min_samples_split=10,
+                min_samples_leaf=5,
+                max_features='sqrt'  # Restrict features used at each split
+            )
         }
         
         # Evaluate all models
@@ -351,52 +373,33 @@ class EnsembleViralPredictor:
                 openai_embeddings = batch_get_embeddings(
                     texts, cache_file=openai_cache_file
                 )
-            
-            # Prepare features for meta-model
-            X_meta = np.column_stack(all_predictions)
-            
-            # Add text features to meta-model input
-            print("Extracting text features...")
-            text_features = np.array([self.extract_text_features(text) for text in texts])
-            X_meta = np.hstack([X_meta, text_features])
-            
-            if self.use_openai:
-                # Apply the same feature extraction as in fit_meta_model
+                
+                # Apply the same feature transformation as in training
                 openai_features = np.array(openai_embeddings)
                 
-                # Add basic statistical features from embeddings
+                # Basic stats 
                 emb_mean = np.mean(openai_features, axis=1, keepdims=True)
                 emb_std = np.std(openai_features, axis=1, keepdims=True)
-                emb_max = np.max(openai_features, axis=1, keepdims=True)
-                emb_min = np.min(openai_features, axis=1, keepdims=True)
-                emb_median = np.median(openai_features, axis=1, keepdims=True)
-                emb_q25 = np.percentile(openai_features, 25, axis=1, keepdims=True)
-                emb_q75 = np.percentile(openai_features, 75, axis=1, keepdims=True)
-                emb_skew = np.nan_to_num(((emb_mean - emb_median) * 3) / (emb_std + 1e-8))  # Approximate skewness
-                emb_kurtosis = np.nan_to_num(((emb_q75 - emb_q25) / (2 * (emb_std + 1e-8))))  # Approximate kurtosis
                 
-    
-                # Standardize features
-                scaler = StandardScaler()
-                openai_scaled = scaler.fit_transform(openai_features)
+                # Apply the same preprocessing and dimensionality reduction
+                openai_scaled = self.scaler.transform(openai_features)
+                emb_reduced = self.pca.transform(openai_scaled)
                 
-                # Apply PCA with fallback to SVD
-                try:
-                    pca = PCA(n_components=min(50, openai_features.shape[1], openai_features.shape[0]))
-                    emb_pca = pca.fit_transform(openai_scaled)
-                except Exception as e:
-                    print(f"PCA failed: {e}, using SVD instead")
-                    svd = TruncatedSVD(n_components=min(50, openai_features.shape[1], openai_features.shape[0]-1))
-                    emb_pca = svd.fit_transform(openai_scaled)
+                # Concatenate with transformer predictions
+                initial_features = np.column_stack([np.column_stack(all_predictions), emb_reduced])
                 
-                # Combine all features
-                openai_meta_features = np.hstack([
-                    emb_mean, emb_std, emb_max, emb_min, emb_median, 
-                    emb_q25, emb_q75, emb_skew, emb_kurtosis, emb_pca
-                ])
+                # Apply the same feature selection
+                if hasattr(self, 'feature_selector'):
+                    X_meta = self.feature_selector.transform(initial_features)
+                else:
+                    # Fallback if somehow feature_selector wasn't stored
+                    X_meta = initial_features
+                    
+                print(f"Feature matrix shape: {X_meta.shape}")
                 
-                # Combine transformer predictions with OpenAI features
-                X_meta = np.hstack([X_meta, openai_meta_features])
+            else:
+                # Without OpenAI, just use transformer predictions
+                X_meta = np.column_stack(all_predictions)
             
             # Make predictions with meta-model
             meta_preds = self.meta_model.predict(X_meta)
