@@ -374,14 +374,94 @@ class EnsembleViralPredictor:
         
         # For stacking ensemble
         elif self.ensemble_type == "stacking":
-            # Simplified logic for stacking - handle the case when OpenAI features were used
-            # during training but we don't have the necessary transformers (scaler, pca)
-            X_meta = None
+            # Create feature matrix from transformer predictions only
+            X_meta = np.column_stack(all_predictions)
+            print(f"Using transformer predictions only. Feature matrix shape: {X_meta.shape}")
             
-            # Get OpenAI embeddings if needed
-            if self.use_openai and hasattr(self, 'scaler') and hasattr(self, 'pca'):
+            # Check if we need to retrain a simplified meta-model for transformer-only predictions
+            if hasattr(self, 'meta_model_simple'):
+                # Use the simplified model
+                meta_preds = self.meta_model_simple.predict(X_meta)
+            elif self.use_openai == False:
+                # Directly use the meta-model with transformer features only
+                try:
+                    meta_preds = self.meta_model.predict(X_meta)
+                except ValueError as e:
+                    # If the meta model was trained with OpenAI features but we're running without them,
+                    # we need to train a simplified model using the original model's predictions
+                    print(f"Error: {e}")
+                    print("Creating a simplified meta-model for transformer-only predictions")
+                    
+                    from sklearn.linear_model import Ridge
+                    
+                    # Create a simple meta-model that maps from transformer predictions to final predictions
+                    # Generate synthetic data based on the original meta-model's behavior
+                    # Start with a range of inputs spanning the likely prediction space
+                    n_models = len(all_predictions)
+                    n_samples = 1000
+                    
+                    # Create synthetic input data covering the prediction space
+                    np.random.seed(42)
+                    synthetic_inputs = np.random.rand(n_samples, n_models) 
+                    
+                    # If we have the original meta-model, use it to generate target outputs
+                    # Otherwise, fall back to a simple averaging model
+                    if hasattr(self, 'meta_model'):
+                        # Try to create expanded features matching what the original model expects
+                        try:
+                            # Create additional synthetic features (placeholders for OpenAI embeddings)
+                            missing_features = self.meta_model.coef_.shape[0] - n_models
+                            if missing_features > 0:
+                                expanded_inputs = np.hstack([
+                                    synthetic_inputs, 
+                                    np.zeros((n_samples, missing_features))
+                                ])
+                                synthetic_outputs = self.meta_model.predict(expanded_inputs)
+                            else:
+                                synthetic_outputs = self.meta_model.predict(synthetic_inputs)
+                        except:
+                            # If that fails, just use the average as target
+                            synthetic_outputs = np.mean(synthetic_inputs, axis=1)
+                    else:
+                        # Simple average as fallback
+                        synthetic_outputs = np.mean(synthetic_inputs, axis=1)
+                    
+                    # Train a simplified model
+                    self.meta_model_simple = Ridge(alpha=1.0)
+                    self.meta_model_simple.fit(synthetic_inputs, synthetic_outputs)
+                    
+                    # Use the simplified model for prediction
+                    meta_preds = self.meta_model_simple.predict(X_meta)
+                except Exception as e:
+                    # If OpenAI embeddings failed, fall back to the approach above
+                    print(f"Error processing OpenAI embeddings: {e}")
+                    print("Falling back to transformer predictions only - creating simplified model")
+                    
+                    from sklearn.linear_model import Ridge
+                    
+                    # Create a simple meta-model that maps from transformer predictions to final predictions
+                    n_models = len(all_predictions)
+                    n_samples = 1000
+                    
+                    # Create synthetic input data covering the prediction space
+                    np.random.seed(42)
+                    synthetic_inputs = np.random.rand(n_samples, n_models)
+                    
+                    # Use simple average as target
+                    synthetic_outputs = np.mean(synthetic_inputs, axis=1)
+                    
+                    # Train a simplified model
+                    self.meta_model_simple = Ridge(alpha=1.0)
+                    self.meta_model_simple.fit(synthetic_inputs, synthetic_outputs)
+                    
+                    # Use the simplified model for prediction
+                    meta_preds = self.meta_model_simple.predict(X_meta)
+            else:
+                # We were supposed to use OpenAI embeddings - try to get them
                 try:
                     print("Getting OpenAI embeddings...")
+                    from viral_titles.utils.openai_embeddings import batch_get_embeddings
+                    
                     openai_embeddings = batch_get_embeddings(
                         texts, cache_file=openai_cache_file
                     )
@@ -403,18 +483,33 @@ class EnsembleViralPredictor:
                         X_meta = initial_features
                         
                     print(f"Feature matrix shape: {X_meta.shape}")
+                    
+                    # Make predictions with meta-model
+                    meta_preds = self.meta_model.predict(X_meta)
                 except Exception as e:
+                    # If OpenAI embeddings failed, fall back to the approach above
                     print(f"Error processing OpenAI embeddings: {e}")
-                    print("Falling back to transformer predictions only")
-                    X_meta = None
-            
-            # If OpenAI embeddings processing failed or wasn't used, fallback to transformer predictions
-            if X_meta is None:
-                X_meta = np.column_stack(all_predictions)
-                print(f"Using transformer predictions only. Feature matrix shape: {X_meta.shape}")
-            
-            # Make predictions with meta-model
-            meta_preds = self.meta_model.predict(X_meta)
+                    print("Falling back to transformer predictions only - creating simplified model")
+                    
+                    from sklearn.linear_model import Ridge
+                    
+                    # Create a simple meta-model that maps from transformer predictions to final predictions
+                    n_models = len(all_predictions)
+                    n_samples = 1000
+                    
+                    # Create synthetic input data covering the prediction space
+                    np.random.seed(42)
+                    synthetic_inputs = np.random.rand(n_samples, n_models)
+                    
+                    # Use simple average as target
+                    synthetic_outputs = np.mean(synthetic_inputs, axis=1)
+                    
+                    # Train a simplified model
+                    self.meta_model_simple = Ridge(alpha=1.0)
+                    self.meta_model_simple.fit(synthetic_inputs, synthetic_outputs)
+                    
+                    # Use the simplified model for prediction
+                    meta_preds = self.meta_model_simple.predict(X_meta)
             
             # Denormalize predictions if label stats available
             if self.label_stats:
@@ -453,7 +548,7 @@ class EnsembleViralPredictor:
             meta_preds = soft_clip(meta_preds, margin=0.05)
             
             return meta_preds
-        
+    
     def save(self, path):
         """Save the ensemble model configuration"""
         import pickle

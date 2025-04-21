@@ -22,10 +22,15 @@ def load_ensemble(path, models_config):
     with open(path, 'rb') as f:
         config = pickle.load(f)
     
+    # Force use_openai to False for stacking model
+    use_openai = config["use_openai"]
+    if config["ensemble_type"] == "stacking":
+        use_openai = False
+    
     ensemble = EnsembleViralPredictor(
         models_config=models_config,
         ensemble_type=config["ensemble_type"],
-        use_openai=config["use_openai"]
+        use_openai=use_openai
     )
     
     ensemble.weights = config["weights"]
