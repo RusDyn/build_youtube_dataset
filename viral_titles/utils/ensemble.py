@@ -17,7 +17,8 @@ from sklearn.preprocessing import StandardScaler
             # Try multiple meta-models and select the best
 from sklearn.linear_model import Ridge, ElasticNet
 from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
-
+import re
+import unicodedata
 
 from .openai_embeddings import batch_get_embeddings
 
@@ -71,6 +72,41 @@ class EnsembleViralPredictor:
             self.weights = [w / total_weight for w in self.weights]
             print(f"Normalized weights: {self.weights}")
     
+    def extract_text_features(self, text):
+        """Extract additional features from the text itself"""
+        # Normalize text
+        text = str(text)
+        
+        # Text length
+        length = len(text)
+        
+        # Count special characters
+        question_marks = text.count('?')
+        exclamation_marks = text.count('!')
+        uppercase_count = sum(1 for c in text if c.isupper())
+        digit_count = sum(1 for c in text if c.isdigit())
+        
+        # Detect script/language features
+        has_cyrillic = bool(re.search('[\u0400-\u04FF]', text))
+        has_cjk = bool(re.search('[\u4E00-\u9FFF\u3040-\u309F\u30A0-\u30FF]', text))
+        has_arabic = bool(re.search('[\u0600-\u06FF]', text))
+        has_devanagari = bool(re.search('[\u0900-\u097F]', text))
+        
+        # Create feature dictionary
+        features = {
+            'length': length,
+            'question_marks': question_marks,
+            'exclamation_marks': exclamation_marks,
+            'uppercase_ratio': uppercase_count / max(1, length),
+            'digit_ratio': digit_count / max(1, length),
+            'has_cyrillic': int(has_cyrillic),
+            'has_cjk': int(has_cjk),
+            'has_arabic': int(has_arabic),
+            'has_devanagari': int(has_devanagari)
+        }
+        
+        return np.array(list(features.values()))
+    
     def fit_meta_model(self, texts, labels, max_length=64, openai_cache_file="openai_embeddings_cache.json"):
         """
         Fit the meta-model for stacked ensemble.
@@ -107,6 +143,11 @@ class EnsembleViralPredictor:
             
             all_predictions.append(predictions)
         
+        # Extract text features for all texts
+        print("Extracting text features...")
+        text_features = np.array([self.extract_text_features(text) for text in texts])
+        print(f"Extracted text features with shape: {text_features.shape}")
+        
         # Get OpenAI embeddings if needed
         if self.use_openai:
             print("Getting OpenAI embeddings...")
@@ -117,6 +158,9 @@ class EnsembleViralPredictor:
         
         # Prepare features for meta-model
         X_meta = np.column_stack(all_predictions)
+        
+        # Add text features to meta-model input
+        X_meta = np.hstack([X_meta, text_features])
         
         if self.use_openai:
             # Apply dimensionality reduction and extract features from OpenAI embeddings
@@ -248,13 +292,54 @@ class EnsembleViralPredictor:
         
         # For weighted average ensemble
         if self.ensemble_type == "weighted_average":
-            # Combine predictions using weighted average
-            ensemble_preds = np.zeros(len(texts))
-            for i, preds in enumerate(all_predictions):
-                ensemble_preds += np.array(preds) * self.weights[i]
+            # First, normalize each model's predictions to [0,1] range
+            normalized_predictions = []
+            for preds in all_predictions:
+                # Calculate min/max for each model's predictions
+                preds_array = np.array(preds)
+                preds_min = np.min(preds_array)
+                preds_max = np.max(preds_array)
+                
+                # Handle the case where all predictions are the same
+                if preds_max == preds_min:
+                    normalized_predictions.append(preds_array)
+                else:
+                    # Normalize to [0,1]
+                    norm_preds = (preds_array - preds_min) / (preds_max - preds_min)
+                    normalized_predictions.append(norm_preds)
             
-            # Ensure predictions are within the valid range [0, 1]
-            ensemble_preds = np.clip(ensemble_preds, 0.0, 1.0)
+            # Combine normalized predictions using weighted average
+            ensemble_preds = np.zeros(len(texts))
+            for i, norm_preds in enumerate(normalized_predictions):
+                ensemble_preds += norm_preds * self.weights[i]
+            
+            # Apply softer clipping - use sigmoid-like function to compress extremes
+            # but retain more gradation near the limits
+            def soft_clip(x, margin=0.1):
+                """Soft clipping function that preserves more detail at extremes"""
+                # Apply sigmoid-like compression at the extremes
+                lower_mask = x < margin
+                upper_mask = x > (1.0 - margin)
+                
+                # Keep middle values unchanged
+                result = x.copy()
+                
+                # Apply soft transformation for values below margin
+                if np.any(lower_mask):
+                    result[lower_mask] = margin * np.exp(
+                        (x[lower_mask] - margin) / margin
+                    )
+                
+                # Apply soft transformation for values above (1-margin)
+                if np.any(upper_mask):
+                    result[upper_mask] = 1.0 - margin * np.exp(
+                        ((1.0 - margin) - x[upper_mask]) / margin
+                    )
+                
+                return result
+            
+            # Apply soft clipping instead of hard clipping
+            ensemble_preds = soft_clip(ensemble_preds, margin=0.05)
             
             return ensemble_preds
         
@@ -269,6 +354,11 @@ class EnsembleViralPredictor:
             
             # Prepare features for meta-model
             X_meta = np.column_stack(all_predictions)
+            
+            # Add text features to meta-model input
+            print("Extracting text features...")
+            text_features = np.array([self.extract_text_features(text) for text in texts])
+            X_meta = np.hstack([X_meta, text_features])
             
             if self.use_openai:
                 # Apply the same feature extraction as in fit_meta_model
@@ -316,8 +406,36 @@ class EnsembleViralPredictor:
                 label_mean, label_std = self.label_stats
                 meta_preds = meta_preds * label_std + label_mean
             
-            # Ensure predictions are within the valid range [0, 1]
-            meta_preds = np.clip(meta_preds, 0.0, 1.0)
+            # Apply soft clipping to ensure values are within [0, 1] but preserve more detail
+            def soft_clip(x, margin=0.1):
+                """Soft clipping function that preserves more detail at extremes"""
+                # Apply sigmoid-like compression at the extremes
+                lower_mask = x < 0
+                upper_mask = x > 1.0
+                mid_lower_mask = (x >= 0) & (x < margin)
+                mid_upper_mask = (x <= 1.0) & (x > (1.0 - margin))
+                
+                # Keep middle values unchanged
+                result = x.copy()
+                
+                # Hard clip severe outliers (less than 0 or greater than 1)
+                if np.any(lower_mask):
+                    result[lower_mask] = 0
+                if np.any(upper_mask):
+                    result[upper_mask] = 1.0
+                
+                # Apply soft transformation for borderline values
+                if np.any(mid_lower_mask):
+                    result[mid_lower_mask] = margin * (x[mid_lower_mask] / margin) ** 2
+                
+                if np.any(mid_upper_mask):
+                    overflow = x[mid_upper_mask] - (1.0 - margin)
+                    result[mid_upper_mask] = (1.0 - margin) + margin * (1 - (1 - overflow/margin) ** 2)
+                
+                return result
+            
+            # Apply soft clipping
+            meta_preds = soft_clip(meta_preds, margin=0.05)
             
             return meta_preds
         
