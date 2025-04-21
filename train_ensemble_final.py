@@ -32,13 +32,13 @@ def load_ensemble(path, models_config):
     ensemble.label_stats = config["label_stats"]
     ensemble.meta_model = config["meta_model"]
     
-    if hasattr(config, "feature_selector"):
+    if "feature_selector" in config:
         ensemble.feature_selector = config["feature_selector"]
     
-    if hasattr(config, "pca"):
+    if "pca" in config:
         ensemble.pca = config["pca"]
     
-    if hasattr(config, "scaler"):
+    if "scaler" in config:
         ensemble.scaler = config["scaler"]
     
     return ensemble
