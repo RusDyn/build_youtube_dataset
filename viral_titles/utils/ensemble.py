@@ -388,21 +388,27 @@ class EnsembleViralPredictor:
                 emb_mean = np.mean(openai_features, axis=1, keepdims=True)
                 emb_std = np.std(openai_features, axis=1, keepdims=True)
                 
-                # Apply the same preprocessing and dimensionality reduction
-                openai_scaled = self.scaler.transform(openai_features)
-                emb_reduced = self.pca.transform(openai_scaled)
-                
-                # Concatenate with transformer predictions
-                initial_features = np.column_stack([np.column_stack(all_predictions), emb_reduced])
-                
-                # Apply the same feature selection
-                if hasattr(self, 'feature_selector'):
-                    X_meta = self.feature_selector.transform(initial_features)
-                else:
-                    # Fallback if somehow feature_selector wasn't stored
-                    X_meta = initial_features
+                # Check if scaler and pca are available
+                if hasattr(self, 'scaler') and hasattr(self, 'pca'):
+                    # Apply the same preprocessing and dimensionality reduction
+                    openai_scaled = self.scaler.transform(openai_features)
+                    emb_reduced = self.pca.transform(openai_scaled)
                     
-                print(f"Feature matrix shape: {X_meta.shape}")
+                    # Concatenate with transformer predictions
+                    initial_features = np.column_stack([np.column_stack(all_predictions), emb_reduced])
+                    
+                    # Apply the same feature selection
+                    if hasattr(self, 'feature_selector'):
+                        X_meta = self.feature_selector.transform(initial_features)
+                    else:
+                        # Fallback if somehow feature_selector wasn't stored
+                        X_meta = initial_features
+                        
+                    print(f"Feature matrix shape: {X_meta.shape}")
+                else:
+                    # If we don't have the scaler or PCA, just use the transformer predictions
+                    print("Warning: scaler or PCA not available, using only transformer predictions")
+                    X_meta = np.column_stack(all_predictions)
                 
             else:
                 # Without OpenAI, just use transformer predictions
@@ -461,6 +467,16 @@ class EnsembleViralPredictor:
             "meta_model": self.meta_model if self.meta_model else None,
         }
         
+        # Add scaler, pca and feature_selector if they exist
+        if hasattr(self, 'scaler'):
+            config["scaler"] = self.scaler
+            
+        if hasattr(self, 'pca'):
+            config["pca"] = self.pca
+            
+        if hasattr(self, 'feature_selector'):
+            config["feature_selector"] = self.feature_selector
+        
         with open(path, "wb") as f:
             pickle.dump(config, f)
         
@@ -471,7 +487,7 @@ class EnsembleViralPredictor:
         """Load an ensemble model configuration"""
         import pickle
         
-        with open(path, "rb") as f:
+        with open(path, 'rb') as f:
             config = pickle.load(f)
         
         ensemble = cls(
@@ -483,5 +499,15 @@ class EnsembleViralPredictor:
         ensemble.weights = config["weights"]
         ensemble.label_stats = config["label_stats"]
         ensemble.meta_model = config["meta_model"]
+        
+        # Load additional attributes if they exist
+        if "feature_selector" in config:
+            ensemble.feature_selector = config["feature_selector"]
+        
+        if "pca" in config:
+            ensemble.pca = config["pca"]
+        
+        if "scaler" in config:
+            ensemble.scaler = config["scaler"]
         
         return ensemble 

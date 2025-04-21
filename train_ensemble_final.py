@@ -32,6 +32,7 @@ def load_ensemble(path, models_config):
     ensemble.label_stats = config["label_stats"]
     ensemble.meta_model = config["meta_model"]
     
+    # Load additional attributes if they exist in the config
     if "feature_selector" in config:
         ensemble.feature_selector = config["feature_selector"]
     
