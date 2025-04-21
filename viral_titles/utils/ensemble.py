@@ -108,6 +108,37 @@ class EnsembleViralPredictor:
         
         return np.array(list(features.values()))
     
+    def get_model_predictions(self, model, tokenizer, texts, max_length=64, batch_size=32):
+        """
+        Get predictions from a model more efficiently using GPU if available.
+        """
+        # Move model to GPU if available
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model = model.to(device)
+        
+        predictions = []
+        
+        # Process in batches
+        for j in tqdm(range(0, len(texts), batch_size)):
+            batch_texts = texts[j:j+batch_size]
+            inputs = tokenizer(batch_texts, padding="max_length", truncation=True, 
+                             max_length=max_length, return_tensors="pt")
+            
+            # Move inputs to the same device as the model
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+            
+            with torch.no_grad():
+                outputs = model(**inputs)
+                batch_preds = outputs.logits.squeeze().cpu().numpy()
+                
+                # Handle case where batch size is 1
+                if batch_size == 1 or len(batch_texts) == 1:
+                    batch_preds = np.array([batch_preds])
+                    
+                predictions.extend(batch_preds)
+        
+        return predictions
+    
     def fit_meta_model(self, texts, labels, max_length=64, openai_cache_file="openai_embeddings_cache.json"):
         """
         Fit the meta-model for stacked ensemble.
@@ -128,20 +159,8 @@ class EnsembleViralPredictor:
         # Get predictions from transformer models
         for i, (model, tokenizer) in enumerate(zip(self.models, self.tokenizers)):
             print(f"Getting predictions from model {i+1}/{len(self.models)}")
-            predictions = []
-            
-            # Process in batches
-            batch_size = 32
-            for j in tqdm(range(0, len(texts), batch_size)):
-                batch_texts = texts[j:j+batch_size]
-                inputs = tokenizer(batch_texts, padding="max_length", truncation=True, 
-                                 max_length=max_length, return_tensors="pt")
-                
-                with torch.no_grad():
-                    outputs = model(**inputs)
-                    batch_preds = outputs.logits.squeeze().cpu().numpy()
-                    predictions.extend(batch_preds)
-            
+            # Use the optimized prediction method
+            predictions = self.get_model_predictions(model, tokenizer, texts, max_length)
             all_predictions.append(predictions)
         
         # Extract text features for all texts
@@ -296,20 +315,8 @@ class EnsembleViralPredictor:
         # Get predictions from transformer models
         for i, (model, tokenizer) in enumerate(zip(self.models, self.tokenizers)):
             print(f"Getting predictions from model {i+1}/{len(self.models)}")
-            predictions = []
-            
-            # Process in batches
-            batch_size = 32
-            for j in tqdm(range(0, len(texts), batch_size)):
-                batch_texts = texts[j:j+batch_size]
-                inputs = tokenizer(batch_texts, padding="max_length", truncation=True, 
-                                 max_length=max_length, return_tensors="pt")
-                
-                with torch.no_grad():
-                    outputs = model(**inputs)
-                    batch_preds = outputs.logits.squeeze().cpu().numpy()
-                    predictions.extend(batch_preds)
-            
+            # Use the optimized prediction method
+            predictions = self.get_model_predictions(model, tokenizer, texts, max_length)
             all_predictions.append(predictions)
         
         # For weighted average ensemble

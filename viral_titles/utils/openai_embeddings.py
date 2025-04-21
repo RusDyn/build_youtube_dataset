@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from openai import OpenAI
+import time
 
 def get_embedding(text, model="text-embedding-ada-002", client=None):
     """Get an embedding from the OpenAI API."""
@@ -16,14 +17,14 @@ def get_embedding(text, model="text-embedding-ada-002", client=None):
     text = text.replace("\n", " ")
     return client.embeddings.create(input=[text], model=model).data[0].embedding
 
-def batch_get_embeddings(texts, model="text-embedding-ada-002", batch_size=100, cache_file=None):
+def batch_get_embeddings(texts, model="text-embedding-ada-002", batch_size=500, cache_file=None):
     """
     Get embeddings for a list of texts, with optional caching.
     
     Args:
         texts: List of text strings to embed
         model: OpenAI model to use
-        batch_size: Number of texts to process in each API call
+        batch_size: Number of texts to process in each API call (increased to 500)
         cache_file: Path to cache embeddings (if None, no caching is used)
     
     Returns:
@@ -63,27 +64,45 @@ def batch_get_embeddings(texts, model="text-embedding-ada-002", batch_size=100, 
         # Process in batches
         for i in tqdm(range(0, len(texts_to_embed), batch_size), desc="Getting OpenAI embeddings"):
             batch_texts = texts_to_embed[i:i+batch_size]
-            try:
-                response = client.embeddings.create(
-                    input=batch_texts,
-                    model=model
-                )
-                batch_embeddings = [item.embedding for item in response.data]
-                all_embeddings.extend(batch_embeddings)
-                
-                # Update cache with new embeddings
-                for j, emb in enumerate(batch_embeddings):
-                    text = texts_to_embed[i+j]
-                    cache[text] = emb
-                
-                # Periodically save cache
-                if cache_file and (i % (batch_size * 5) == 0 or i + batch_size >= len(texts_to_embed)):
-                    with open(cache_file, 'w') as f:
-                        json.dump(cache, f)
-                    print(f"Saved cache with {len(cache)} entries")
+            retry_count = 0
+            max_retries = 3
+            
+            while retry_count < max_retries:
+                try:
+                    response = client.embeddings.create(
+                        input=batch_texts,
+                        model=model
+                    )
+                    batch_embeddings = [item.embedding for item in response.data]
+                    all_embeddings.extend(batch_embeddings)
                     
-            except Exception as e:
-                print(f"Error in batch {i//batch_size}: {e}")
+                    # Update cache with new embeddings
+                    for j, emb in enumerate(batch_embeddings):
+                        text = texts_to_embed[i+j]
+                        cache[text] = emb
+                    
+                    # Periodically save cache
+                    if cache_file and (i % (batch_size * 5) == 0 or i + batch_size >= len(texts_to_embed)):
+                        try:
+                            with open(cache_file, 'w') as f:
+                                json.dump(cache, f)
+                            print(f"Saved cache with {len(cache)} entries")
+                        except Exception as e:
+                            print(f"Error saving cache: {e}")
+                    
+                    # Success, break the retry loop
+                    break
+                        
+                except Exception as e:
+                    retry_count += 1
+                    wait_time = 2 ** retry_count  # Exponential backoff
+                    print(f"Error in batch {i//batch_size} (attempt {retry_count}/{max_retries}): {e}")
+                    print(f"Waiting {wait_time} seconds before retrying...")
+                    time.sleep(wait_time)
+            
+            # If all retries failed, use empty embeddings
+            if retry_count >= max_retries:
+                print(f"Max retries reached for batch {i//batch_size}. Using empty embeddings.")
                 # Continue with empty embeddings for this batch
                 all_embeddings.extend([[0] * 1536] * len(batch_texts))
     
