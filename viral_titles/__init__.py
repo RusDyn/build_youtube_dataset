@@ -33,6 +33,10 @@ from .utils import (
     PairwiseRankingLoss
 )
 
+# Import ensemble and OpenAI embedding utilities
+from .utils.ensemble import EnsembleViralPredictor
+from .utils.openai_embeddings import get_embedding, batch_get_embeddings
+
 __all__ = [
     # Config
     'BASE_MODEL',
@@ -60,5 +64,10 @@ __all__ = [
     'analyze_viral_score_distribution',
     'fix_biased_dataset',
     'SpearmanCallback',
-    'PairwiseRankingLoss'
+    'PairwiseRankingLoss',
+    
+    # Ensemble and embeddings
+    'EnsembleViralPredictor',
+    'get_embedding',
+    'batch_get_embeddings'
 ] 
