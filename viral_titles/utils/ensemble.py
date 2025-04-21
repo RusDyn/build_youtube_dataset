@@ -374,22 +374,21 @@ class EnsembleViralPredictor:
         
         # For stacking ensemble
         elif self.ensemble_type == "stacking":
+            # Simplified logic for stacking - handle the case when OpenAI features were used
+            # during training but we don't have the necessary transformers (scaler, pca)
+            X_meta = None
+            
             # Get OpenAI embeddings if needed
-            if self.use_openai:
-                print("Getting OpenAI embeddings...")
-                openai_embeddings = batch_get_embeddings(
-                    texts, cache_file=openai_cache_file
-                )
-                
-                # Apply the same feature transformation as in training
-                openai_features = np.array(openai_embeddings)
-                
-                # Basic stats 
-                emb_mean = np.mean(openai_features, axis=1, keepdims=True)
-                emb_std = np.std(openai_features, axis=1, keepdims=True)
-                
-                # Check if scaler and pca are available
-                if hasattr(self, 'scaler') and hasattr(self, 'pca'):
+            if self.use_openai and hasattr(self, 'scaler') and hasattr(self, 'pca'):
+                try:
+                    print("Getting OpenAI embeddings...")
+                    openai_embeddings = batch_get_embeddings(
+                        texts, cache_file=openai_cache_file
+                    )
+                    
+                    # Apply the same feature transformation as in training
+                    openai_features = np.array(openai_embeddings)
+                    
                     # Apply the same preprocessing and dimensionality reduction
                     openai_scaled = self.scaler.transform(openai_features)
                     emb_reduced = self.pca.transform(openai_scaled)
@@ -401,18 +400,18 @@ class EnsembleViralPredictor:
                     if hasattr(self, 'feature_selector'):
                         X_meta = self.feature_selector.transform(initial_features)
                     else:
-                        # Fallback if somehow feature_selector wasn't stored
                         X_meta = initial_features
                         
                     print(f"Feature matrix shape: {X_meta.shape}")
-                else:
-                    # If we don't have the scaler or PCA, just use the transformer predictions
-                    print("Warning: scaler or PCA not available, using only transformer predictions")
-                    X_meta = np.column_stack(all_predictions)
-                
-            else:
-                # Without OpenAI, just use transformer predictions
+                except Exception as e:
+                    print(f"Error processing OpenAI embeddings: {e}")
+                    print("Falling back to transformer predictions only")
+                    X_meta = None
+            
+            # If OpenAI embeddings processing failed or wasn't used, fallback to transformer predictions
+            if X_meta is None:
                 X_meta = np.column_stack(all_predictions)
+                print(f"Using transformer predictions only. Feature matrix shape: {X_meta.shape}")
             
             # Make predictions with meta-model
             meta_preds = self.meta_model.predict(X_meta)
