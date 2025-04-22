@@ -113,7 +113,7 @@ def stage_prep():
         data.append({
             "prompt": prompt,
             "response": resp,
-            "score": float(r['viral_score']),
+            "viral_score": float(r['viral_score']),
             "title": title,
             "description": desc
         })
