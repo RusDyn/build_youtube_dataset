@@ -127,8 +127,8 @@ def main():
                         help="Proportion of training data to use for weight optimization")
     parser.add_argument("--rank_average", action="store_true",
                         help="Use rank-based averaging in the stacking ensemble")
-    parser.add_argument("--dataset", type=str, default="hf_dataset",
-                        help="Dataset path to use")
+    parser.add_argument("--dataset", type=str, default="hf_dataset_reg_improved",
+                        help="Dataset path to use (default: hf_dataset_reg_improved)")
     parser.add_argument("--score_field", type=str, default="viral_score",
                         help="Field name containing the target score in the dataset")
     

@@ -40,7 +40,7 @@ def main():
     parser.add_argument("--target", type=str, default="title",
                         choices=["title", "description"],
                         help="Target field to predict from")
-    parser.add_argument("--score_field", type=str, default="score",
+    parser.add_argument("--score_field", type=str, default="viral_score",
                         help="Field name containing the target score in the dataset")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for reproducibility")
