@@ -15,7 +15,7 @@ from datasets import DatasetDict
 import torch
 
 from viral_titles.utils.ensemble import EnsembleViralPredictor, percentile_rank
-from viral_titles.utils.clipping import soft_clip
+from viral_titles.utils.clipping import soft_clip, linear_clip
 from viral_titles import configure_windows_console
 
 def load_ensemble(path, models_config):
@@ -70,6 +70,8 @@ def main():
                         help="Percentage of test data to use for blend optimization")
     parser.add_argument("--soft_clip_margin", type=float, default=0.1,
                         help="Margin for soft clipping (set to 0 to disable)")
+    parser.add_argument("--use_linear_clip", action="store_true",
+                        help="Use linear clipping instead of soft clipping")
     
     args = parser.parse_args()
     
@@ -111,19 +113,23 @@ def main():
     print(f"Weighted predictions - min: {weighted_preds.min():.4f}, max: {weighted_preds.max():.4f}, mean: {weighted_preds.mean():.4f}")
     print(f"Stacking predictions - min: {stacking_preds.min():.4f}, max: {stacking_preds.max():.4f}, mean: {stacking_preds.mean():.4f}")
     
-    # Debug: Check if predictions are correctly ordered (positive correlation with ground truth)
+    # Check if predictions are correctly ordered (positive correlation with ground truth)
     w_raw_corr = spearmanr(test_labels, weighted_preds).correlation
     s_raw_corr = spearmanr(test_labels, stacking_preds).correlation
     print(f"Raw correlations - Weighted: {w_raw_corr:.4f}, Stacking: {s_raw_corr:.4f}")
     
-    # Fix for negative correlations - invert predictions if correlation is negative
+    # CRITICAL FIX: Invert predictions if correlation is negative
     if w_raw_corr < 0:
-        print("WARNING: Weighted model has negative correlation - inverting predictions")
+        print("INVERTING weighted model predictions (negative correlation detected)")
         weighted_preds = 1 - weighted_preds
+        w_raw_corr = spearmanr(test_labels, weighted_preds).correlation
+        print(f"After inversion - Weighted correlation: {w_raw_corr:.4f}")
     
     if s_raw_corr < 0:
-        print("WARNING: Stacking model has negative correlation - inverting predictions")
+        print("INVERTING stacking model predictions (negative correlation detected)")
         stacking_preds = 1 - stacking_preds
+        s_raw_corr = spearmanr(test_labels, stacking_preds).correlation
+        print(f"After inversion - Stacking correlation: {s_raw_corr:.4f}")
     
     # Optionally optimize blend weights on a hold-out portion
     blend_weights = [args.weighted_weight, args.stacking_weight]
@@ -163,9 +169,12 @@ def main():
             # Compute blended predictions
             blended_preds = norm_weights[0] * opt_weighted_preds + norm_weights[1] * opt_stacking_preds
             
-            # Apply soft clipping if needed
+            # Apply clipping if needed
             if args.soft_clip_margin > 0:
-                blended_preds = soft_clip(blended_preds, margin=args.soft_clip_margin)
+                if args.use_linear_clip:
+                    blended_preds = linear_clip(blended_preds, margin=args.soft_clip_margin)
+                else:
+                    blended_preds = soft_clip(blended_preds, margin=args.soft_clip_margin)
             
             # Calculate Spearman correlation
             spearman = spearmanr(opt_labels, blended_preds).correlation
@@ -192,9 +201,14 @@ def main():
     final_preds = (blend_weights[0] * weighted_preds + 
                    blend_weights[1] * stacking_preds)
     
-    # Apply soft clipping if needed
+    # Apply clipping if needed
     if args.soft_clip_margin > 0:
-        final_preds = soft_clip(final_preds, margin=args.soft_clip_margin)
+        if args.use_linear_clip:
+            print(f"Applying linear clipping with margin {args.soft_clip_margin}")
+            final_preds = linear_clip(final_preds, margin=args.soft_clip_margin)
+        else:
+            print(f"Applying soft clipping with margin {args.soft_clip_margin}")
+            final_preds = soft_clip(final_preds, margin=args.soft_clip_margin)
     else:
         # Ensure predictions are within range [0, 1]
         final_preds = np.clip(final_preds, 0, 1)

@@ -221,6 +221,10 @@ def run_step(step_number, args):
         # Add soft clipping parameter
         cmd.extend(["--soft_clip_margin", str(args.soft_clip_margin)])
         
+        # Add linear clipping if requested
+        if args.use_linear_clip:
+            cmd.append("--use_linear_clip")
+        
         print(f"Running command: {' '.join(cmd)}")
         subprocess.run(cmd)
         
