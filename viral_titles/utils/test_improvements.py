@@ -6,6 +6,7 @@ import sys
 import pickle
 import numpy as np
 from scipy.stats import spearmanr
+from .clipping import soft_clip
 
 # Example data - synthetic predictions from base models
 np.random.seed(42)
@@ -30,11 +31,6 @@ def percentile_rank(vec):
     ranks = np.array([sorted(vec).index(x) + 1 for x in vec])
     # Convert to percentiles (0-1 range)
     return (ranks - 1) / (len(vec) - 1)
-
-# Function for soft-clipping
-def soft_clip(x, margin=0.1):
-    """Soft clip to [0, 1] range with specified margin"""
-    return 1 / (1 + np.exp(-(np.log(margin) / margin) * (x - 0.5) * 12))
 
 def run_experiment():
     """Run the experiments to demonstrate improvements"""

@@ -22,6 +22,7 @@ import re
 import unicodedata
 
 from .openai_embeddings import batch_get_embeddings
+from .clipping import soft_clip
 
 def percentile_rank(vec):
     """
@@ -35,7 +36,14 @@ def percentile_rank(vec):
         Percentile ranks of the same shape as input
     """
     # Get the ranks (1-indexed)
-    ranks = np.array([sorted(vec).index(x) + 1 for x in vec])
+    # More efficient implementation using numpy
+    vec = np.asarray(vec)
+    ranks = np.zeros_like(vec)
+    
+    # Handle ties by assigning the average rank
+    order = vec.argsort()
+    ranks[order] = np.arange(1, len(vec) + 1)
+    
     # Convert to percentiles (0-1 range)
     return (ranks - 1) / (len(vec) - 1)
 
@@ -338,17 +346,13 @@ class EnsembleViralPredictor:
                 
             # Apply soft clipping if margin is provided
             if soft_clip_margin is not None and soft_clip_margin > 0:
-                def soft_clip(x, margin=soft_clip_margin):
-                    """Soft clip to [0, 1] range with specified margin"""
-                    return 1 / (1 + np.exp(-(np.log(margin) / margin) * (x - 0.5) * 12))
-                
-                predictions = soft_clip(predictions)
+                predictions = soft_clip(predictions, margin=soft_clip_margin)
                 
             return predictions
         
         # For stacking ensemble
         elif self.ensemble_type == "stacking":
-            # Prepare features for meta-model prediction
+            # Prepare features for meta-model prediction (base model outputs)
             X_meta = np.column_stack(all_predictions)
             base_shape = X_meta.shape
             
@@ -357,6 +361,7 @@ class EnsembleViralPredictor:
                 print("Extracting text features...")
                 text_features = np.array([self.extract_text_features(text) for text in texts])
                 X_meta = np.hstack([X_meta, text_features])
+                
                 # Add OpenAI embeddings
                 print("Getting OpenAI embeddings...")
                 openai_embeddings = batch_get_embeddings(
@@ -378,7 +383,7 @@ class EnsembleViralPredictor:
                 
                 print(f"Feature matrix shape: {X_meta.shape}")
             else:
-                # Without OpenAI embeddings, use transformer predictions only
+                # Without OpenAI embeddings, use only transformer outputs
                 print(f"Using transformer predictions only. Feature matrix shape: {base_shape}")
             
             # Apply the meta-model
@@ -391,11 +396,7 @@ class EnsembleViralPredictor:
                 
             # Apply soft clipping if margin is provided
             if soft_clip_margin is not None and soft_clip_margin > 0:
-                def soft_clip(x, margin=soft_clip_margin):
-                    """Soft clip to [0, 1] range with specified margin"""
-                    return 1 / (1 + np.exp(-(np.log(margin) / margin) * (x - 0.5) * 12))
-                
-                predictions = soft_clip(predictions)
+                predictions = soft_clip(predictions, margin=soft_clip_margin)
                 
             return predictions
     

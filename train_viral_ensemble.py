@@ -20,6 +20,7 @@ from tqdm import tqdm
 from viral_titles.utils.ensemble import EnsembleViralPredictor
 from viral_titles.config import MAX_LEN_TITLE
 from viral_titles import configure_windows_console
+from viral_titles.utils.clipping import soft_clip
 
 def main():
     parser = argparse.ArgumentParser(description="Train ensemble model for viral YouTube titles")
@@ -150,9 +151,7 @@ def main():
                     
                     # Apply soft clipping if needed
                     if args.soft_clip_margin > 0:
-                        def soft_clip(x, margin=args.soft_clip_margin):
-                            return 1 / (1 + np.exp(-(np.log(margin) / margin) * (x - 0.5) * 12))
-                        weighted_preds = soft_clip(weighted_preds)
+                        weighted_preds = soft_clip(weighted_preds, margin=args.soft_clip_margin)
                     
                     # Calculate Spearman correlation
                     spearman = spearmanr(holdout_labels, weighted_preds).correlation

@@ -15,6 +15,7 @@ from datasets import DatasetDict
 import torch
 
 from viral_titles.utils.ensemble import EnsembleViralPredictor, percentile_rank
+from viral_titles.utils.clipping import soft_clip
 from viral_titles import configure_windows_console
 
 def load_ensemble(path, models_config):
@@ -105,6 +106,25 @@ def main():
     print("Getting predictions from stacking model...")
     stacking_preds = stacking_ensemble.predict(test_texts, use_rank=args.rank_average)
     
+    # Debug: Print raw prediction statistics
+    print("\nDebug - Raw prediction statistics:")
+    print(f"Weighted predictions - min: {weighted_preds.min():.4f}, max: {weighted_preds.max():.4f}, mean: {weighted_preds.mean():.4f}")
+    print(f"Stacking predictions - min: {stacking_preds.min():.4f}, max: {stacking_preds.max():.4f}, mean: {stacking_preds.mean():.4f}")
+    
+    # Debug: Check if predictions are correctly ordered (positive correlation with ground truth)
+    w_raw_corr = spearmanr(test_labels, weighted_preds).correlation
+    s_raw_corr = spearmanr(test_labels, stacking_preds).correlation
+    print(f"Raw correlations - Weighted: {w_raw_corr:.4f}, Stacking: {s_raw_corr:.4f}")
+    
+    # Fix for negative correlations - invert predictions if correlation is negative
+    if w_raw_corr < 0:
+        print("WARNING: Weighted model has negative correlation - inverting predictions")
+        weighted_preds = 1 - weighted_preds
+    
+    if s_raw_corr < 0:
+        print("WARNING: Stacking model has negative correlation - inverting predictions")
+        stacking_preds = 1 - stacking_preds
+    
     # Optionally optimize blend weights on a hold-out portion
     blend_weights = [args.weighted_weight, args.stacking_weight]
     
@@ -145,9 +165,7 @@ def main():
             
             # Apply soft clipping if needed
             if args.soft_clip_margin > 0:
-                def soft_clip(x, margin=args.soft_clip_margin):
-                    return 1 / (1 + np.exp(-(np.log(margin) / margin) * (x - 0.5) * 12))
-                blended_preds = soft_clip(blended_preds)
+                blended_preds = soft_clip(blended_preds, margin=args.soft_clip_margin)
             
             # Calculate Spearman correlation
             spearman = spearmanr(opt_labels, blended_preds).correlation
@@ -160,10 +178,15 @@ def main():
         print(f"Best blend weights: [W:{best_weights[0]:.2f}, S:{best_weights[1]:.2f}], Spearman: {best_spearman:.4f}")
         blend_weights = best_weights
     
-    # Apply rank transformation if requested
-    if args.rank_average and not args.optimize_blend:  # If optimize_blend is true, we already did this for the holdout
-        weighted_preds = percentile_rank(weighted_preds)
-        stacking_preds = percentile_rank(stacking_preds)
+    # Apply rank transformation ALWAYS for consistent scaling
+    print("Applying percentile ranking to predictions for consistent scaling")
+    weighted_preds = percentile_rank(weighted_preds)
+    stacking_preds = percentile_rank(stacking_preds)
+    
+    # Debug: Print ranked prediction statistics
+    print("\nDebug - Ranked prediction statistics:")
+    print(f"Weighted predictions - min: {weighted_preds.min():.4f}, max: {weighted_preds.max():.4f}, mean: {weighted_preds.mean():.4f}")
+    print(f"Stacking predictions - min: {stacking_preds.min():.4f}, max: {stacking_preds.max():.4f}, mean: {stacking_preds.mean():.4f}")
     
     # Combine predictions with weights
     final_preds = (blend_weights[0] * weighted_preds + 
@@ -171,9 +194,7 @@ def main():
     
     # Apply soft clipping if needed
     if args.soft_clip_margin > 0:
-        def soft_clip(x, margin=args.soft_clip_margin):
-            return 1 / (1 + np.exp(-(np.log(margin) / margin) * (x - 0.5) * 12))
-        final_preds = soft_clip(final_preds)
+        final_preds = soft_clip(final_preds, margin=args.soft_clip_margin)
     else:
         # Ensure predictions are within range [0, 1]
         final_preds = np.clip(final_preds, 0, 1)
@@ -181,6 +202,23 @@ def main():
     # Calculate metrics
     mse = mean_squared_error(test_labels, final_preds)
     spearman = spearmanr(test_labels, final_preds).correlation
+    
+    # Debug: Print prediction distribution for final predictions
+    print("\nDebug - Final prediction statistics:")
+    print(f"Final predictions - min: {final_preds.min():.4f}, max: {final_preds.max():.4f}, mean: {final_preds.mean():.4f}")
+    print(f"Ground truth - min: {min(test_labels):.4f}, max: {max(test_labels):.4f}, mean: {sum(test_labels)/len(test_labels):.4f}")
+    
+    # Print distribution of predictions in bins
+    bins = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+    pred_hist, _ = np.histogram(final_preds, bins=bins)
+    true_hist, _ = np.histogram(test_labels, bins=bins)
+    
+    print("\nPrediction distribution:")
+    print("Bin  | Predictions | Ground Truth")
+    print("-" * 40)
+    for i, (p_count, t_count) in enumerate(zip(pred_hist, true_hist)):
+        bin_range = f"{bins[i]:.1f}-{bins[i+1]:.1f}"
+        print(f"{bin_range} | {p_count:11d} | {t_count:11d}")
     
     # Calculate metrics for individual models for comparison
     weighted_mse = mean_squared_error(test_labels, weighted_preds)
