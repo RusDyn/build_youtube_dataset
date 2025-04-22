@@ -187,13 +187,14 @@ def main():
         print(f"Best blend weights: [W:{best_weights[0]:.2f}, S:{best_weights[1]:.2f}], Spearman: {best_spearman:.4f}")
         blend_weights = best_weights
     
-    # Apply rank transformation ALWAYS for consistent scaling
-    print("Applying percentile ranking to predictions for consistent scaling")
-    weighted_preds = percentile_rank(weighted_preds)
-    stacking_preds = percentile_rank(stacking_preds)
+    # If we didn't already get rank-averaged predictions, apply percentile rank now
+    if not args.rank_average:
+        print("Applying percentile ranking to predictions for consistent scaling")
+        weighted_preds = percentile_rank(weighted_preds)
+        stacking_preds = percentile_rank(stacking_preds)
     
-    # Debug: Print ranked prediction statistics
-    print("\nDebug - Ranked prediction statistics:")
+    # Debug: Print prediction statistics after possible ranking
+    print("\nDebug - Prediction statistics after ranking step:")
     print(f"Weighted predictions - min: {weighted_preds.min():.4f}, max: {weighted_preds.max():.4f}, mean: {weighted_preds.mean():.4f}")
     print(f"Stacking predictions - min: {stacking_preds.min():.4f}, max: {stacking_preds.max():.4f}, mean: {stacking_preds.mean():.4f}")
     
