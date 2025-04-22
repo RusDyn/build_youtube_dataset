@@ -14,7 +14,7 @@ from sklearn.metrics import mean_squared_error
 from datasets import DatasetDict
 import torch
 
-from viral_titles.utils.ensemble import EnsembleViralPredictor
+from viral_titles.utils.ensemble import EnsembleViralPredictor, percentile_rank
 from viral_titles import configure_windows_console
 
 def load_ensemble(path, models_config):
@@ -59,6 +59,14 @@ def main():
     parser.add_argument("--model_paths", type=str, nargs="+",
                         default=["deberta_v3_base_ckpt", "deberta_v3_large_ckpt"],
                         help="Paths to trained models to include in ensemble")
+    parser.add_argument("--rank_average", action="store_true",
+                        help="Use rank-based averaging for final predictions")
+    parser.add_argument("--optimize_blend", action="store_true",
+                        help="Optimize the blend weights using a grid search")
+    parser.add_argument("--holdout_split", type=float, default=0.1,
+                        help="Percentage of test data to use for blend optimization")
+    parser.add_argument("--soft_clip_margin", type=float, default=0.1,
+                        help="Margin for soft clipping (set to 0 to disable)")
     
     args = parser.parse_args()
     
@@ -90,17 +98,83 @@ def main():
     
     # Get predictions from both models
     print("Getting predictions from weighted average model...")
-    weighted_preds = weighted_ensemble.predict(test_texts)
+    weighted_preds = weighted_ensemble.predict(test_texts, use_rank=args.rank_average)
     
     print("Getting predictions from stacking model...")
-    stacking_preds = stacking_ensemble.predict(test_texts)
+    stacking_preds = stacking_ensemble.predict(test_texts, use_rank=args.rank_average)
     
-    # Combine predictions with different weights
-    final_preds = (args.weighted_weight * weighted_preds + 
-                   args.stacking_weight * stacking_preds)
+    # Optionally optimize blend weights on a hold-out portion
+    blend_weights = [args.weighted_weight, args.stacking_weight]
     
-    # Ensure predictions are within range [0, 1]
-    final_preds = np.clip(final_preds, 0, 1)
+    if args.optimize_blend and args.holdout_split > 0:
+        print(f"Optimizing blend weights using {args.holdout_split:.0%} of test data...")
+        
+        # Create hold-out split from test data for weight optimization
+        split_idx = int(len(test_texts) * (1 - args.holdout_split))
+        opt_texts = test_texts[split_idx:]
+        opt_labels = test_labels[split_idx:]
+        
+        # Get predictions for optimization set
+        opt_weighted_preds = weighted_preds[split_idx:]
+        opt_stacking_preds = stacking_preds[split_idx:]
+        
+        # Convert to ranks if requested
+        if args.rank_average:
+            opt_weighted_preds = percentile_rank(opt_weighted_preds)
+            opt_stacking_preds = percentile_rank(opt_stacking_preds)
+        
+        # Grid search for optimal weights
+        print("Performing grid search for optimal blend weights...")
+        best_spearman = -1.0
+        best_weights = [0.5, 0.5]  # Default equal weights
+        
+        grid_points = 21  # 0.0, 0.05, 0.1, ..., 1.0
+        for i in range(grid_points):
+            w_stacking = i / (grid_points - 1)
+            w_weighted = 1.0 - w_stacking
+            weights = [w_weighted, w_stacking]
+            
+            # Normalize weights
+            total_weight = sum(weights)
+            norm_weights = [w / total_weight for w in weights]
+            
+            # Compute blended predictions
+            blended_preds = norm_weights[0] * opt_weighted_preds + norm_weights[1] * opt_stacking_preds
+            
+            # Apply soft clipping if needed
+            if args.soft_clip_margin > 0:
+                def soft_clip(x, margin=args.soft_clip_margin):
+                    return 1 / (1 + np.exp(-(np.log(margin) / margin) * (x - 0.5) * 12))
+                blended_preds = soft_clip(blended_preds)
+            
+            # Calculate Spearman correlation
+            spearman = spearmanr(opt_labels, blended_preds).correlation
+            print(f"Weights: [W:{w_weighted:.2f}, S:{w_stacking:.2f}], Spearman: {spearman:.4f}")
+            
+            if spearman > best_spearman:
+                best_spearman = spearman
+                best_weights = weights
+        
+        print(f"Best blend weights: [W:{best_weights[0]:.2f}, S:{best_weights[1]:.2f}], Spearman: {best_spearman:.4f}")
+        blend_weights = best_weights
+    
+    # Apply rank transformation if requested
+    if args.rank_average and not args.optimize_blend:  # If optimize_blend is true, we already did this for the holdout
+        weighted_preds = percentile_rank(weighted_preds)
+        stacking_preds = percentile_rank(stacking_preds)
+    
+    # Combine predictions with weights
+    final_preds = (blend_weights[0] * weighted_preds + 
+                   blend_weights[1] * stacking_preds)
+    
+    # Apply soft clipping if needed
+    if args.soft_clip_margin > 0:
+        def soft_clip(x, margin=args.soft_clip_margin):
+            return 1 / (1 + np.exp(-(np.log(margin) / margin) * (x - 0.5) * 12))
+        final_preds = soft_clip(final_preds)
+    else:
+        # Ensure predictions are within range [0, 1]
+        final_preds = np.clip(final_preds, 0, 1)
     
     # Calculate metrics
     mse = mean_squared_error(test_labels, final_preds)
@@ -144,6 +218,7 @@ def main():
         "weighted_preds": weighted_preds.tolist(),
         "stacking_preds": stacking_preds.tolist(),
         "final_preds": final_preds.tolist(),
+        "blend_weights": blend_weights,
         "metrics": {
             "weighted_mse": weighted_mse,
             "weighted_spearman": weighted_spearman,

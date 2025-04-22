@@ -23,6 +23,22 @@ import unicodedata
 
 from .openai_embeddings import batch_get_embeddings
 
+def percentile_rank(vec):
+    """
+    Convert a vector to its percentile ranks (0-1 range).
+    This preserves the rank order while normalizing the scale.
+    
+    Args:
+        vec: numpy array of predictions
+        
+    Returns:
+        Percentile ranks of the same shape as input
+    """
+    # Get the ranks (1-indexed)
+    ranks = np.array([sorted(vec).index(x) + 1 for x in vec])
+    # Convert to percentiles (0-1 range)
+    return (ranks - 1) / (len(vec) - 1)
+
 class EnsembleViralPredictor:
     """
     Ensemble model that combines predictions from transformer models and OpenAI embeddings.
@@ -139,7 +155,7 @@ class EnsembleViralPredictor:
         
         return predictions
     
-    def fit_meta_model(self, texts, labels, max_length=64, openai_cache_file="openai_embeddings_cache.json"):
+    def fit_meta_model(self, texts, labels, max_length=64, openai_cache_file="openai_embeddings_cache.json", use_rank=False):
         """
         Fit the meta-model for stacked ensemble.
         
@@ -148,6 +164,7 @@ class EnsembleViralPredictor:
             labels: Corresponding labels/targets
             max_length: Max sequence length for tokenizers
             openai_cache_file: File to cache OpenAI embeddings
+            use_rank: Whether to use percentile rank scaling for predictions
         """
         if self.ensemble_type != "stacking":
             print("No need to fit meta model for weighted average ensemble")
@@ -161,12 +178,23 @@ class EnsembleViralPredictor:
             print(f"Getting predictions from model {i+1}/{len(self.models)}")
             # Use the optimized prediction method
             predictions = self.get_model_predictions(model, tokenizer, texts, max_length)
+            
+            # Apply rank transformation if requested
+            if use_rank:
+                predictions = percentile_rank(predictions)
+                
             all_predictions.append(predictions)
         
         # Extract text features for all texts
         print("Extracting text features...")
         text_features = np.array([self.extract_text_features(text) for text in texts])
         print(f"Extracted text features with shape: {text_features.shape}")
+        
+        # Prepare features for meta-model
+        X_meta = np.column_stack(all_predictions)
+        
+        # Add text features to meta-model input
+        X_meta = np.hstack([X_meta, text_features])
         
         # Get OpenAI embeddings if needed
         if self.use_openai:
@@ -175,25 +203,13 @@ class EnsembleViralPredictor:
                 texts, cache_file=openai_cache_file
             )
             print(f"Obtained {len(openai_embeddings)} OpenAI embeddings")
-        
-        # Prepare features for meta-model
-        X_meta = np.column_stack(all_predictions)
-        
-        # Add text features to meta-model input
-        X_meta = np.hstack([X_meta, text_features])
-        
-        if self.use_openai:
+            
             # Apply dimensionality reduction and extract features from OpenAI embeddings
             openai_features = np.array(openai_embeddings)
             
             # Add basic statistical features from embeddings - more selectively
             emb_mean = np.mean(openai_features, axis=1, keepdims=True)
             emb_std = np.std(openai_features, axis=1, keepdims=True)
-            
-            # More advanced but selective features
-            from sklearn.decomposition import PCA, TruncatedSVD
-            from sklearn.preprocessing import StandardScaler
-            from sklearn.feature_selection import SelectKBest, f_regression
             
             # Standardize features
             scaler = StandardScaler()
@@ -239,339 +255,180 @@ class EnsembleViralPredictor:
             X_meta = selected_features
             
             print(f"Selected {selected_features.shape[1]} features out of {initial_features.shape[1]}")
-            
-        else:
-            # Without OpenAI, just use the transformer predictions
-            X_meta = np.column_stack(all_predictions)
         
+        # Store label statistics for later use in prediction
+        label_mean = np.mean(labels)
+        label_std = np.std(labels)
+        self.label_stats = (label_mean, label_std)
+        
+        # Normalize labels for training
+        y_meta = (np.array(labels) - label_mean) / label_std
+            
         print(f"Meta-model input shape: {X_meta.shape}")
         
         # Initialize models to try with stronger regularization
         models = {
-            "Ridge": Ridge(alpha=10.0),  # Increased regularization
-            "RidgeCV": RidgeCV(alphas=[0.1, 1.0, 10.0, 100.0]),  # Cross-validated alpha
-            "ElasticNet": ElasticNet(alpha=1.0, l1_ratio=0.5),  # Increased alpha
-            "GradientBoosting": GradientBoostingRegressor(
-                n_estimators=100, 
-                learning_rate=0.05,  # Reduced learning rate
-                max_depth=2,  # Reduced depth
-                subsample=0.8,  # Add subsampling
-                min_samples_split=10  # Increase min samples
-            ),
-            "RandomForest": RandomForestRegressor(
-                n_estimators=100, 
-                max_depth=5,
-                min_samples_split=10,
-                min_samples_leaf=5,
-                max_features='sqrt'  # Restrict features used at each split
-            )
+            "Ridge": Ridge(alpha=10.0),
+            "RidgeCV": RidgeCV(alphas=[0.1, 1.0, 10.0, 50.0, 100.0], cv=5),
+            "ElasticNet": ElasticNet(alpha=0.1, l1_ratio=0.5, max_iter=1000),
+            "GradientBoosting": GradientBoostingRegressor(n_estimators=100, learning_rate=0.05, 
+                                                         max_depth=3, min_samples_split=20),
+            "RandomForest": RandomForestRegressor(n_estimators=100, max_depth=5)
         }
         
-        # Evaluate all models
-        best_score = -1
+        # Evaluate each model using cross-validation
+        best_score = -float('inf')
+        best_model = None
         best_model_name = None
-        scores = {}
         
         for name, model in models.items():
-            try:
-                scores[name] = cross_val_score(model, X_meta, y_meta, cv=5, 
-                                              scoring=lambda est, X, y: spearmanr(
-                                                  est.predict(X), y
-                                              ).correlation)
-                
-                mean_score = np.mean(scores[name])
-                std_score = np.std(scores[name])
-                
-                print(f"{name} CV Spearman: {mean_score:.4f} ± {std_score:.4f}")
-                
-                if mean_score > best_score:
-                    best_score = mean_score
-                    best_model_name = name
-            except Exception as e:
-                print(f"Error evaluating {name}: {e}")
+            cv_scores = cross_val_score(model, X_meta, y_meta, cv=5, scoring=lambda est, X, y: spearmanr(
+                est.predict(X), y
+            ).correlation)
+            mean_score = np.mean(cv_scores)
+            std_score = np.std(cv_scores)
+            print(f"{name} CV Spearman: {mean_score:.4f} ± {std_score:.4f}")
+            
+            if mean_score > best_score:
+                best_score = mean_score
+                best_model = model
+                best_model_name = name
         
-        # Select the best model
         print(f"Using {best_model_name} as meta-model with score {best_score:.4f}")
-        self.meta_model = models[best_model_name]
         
-        # Fit the selected model on all training data
-        self.meta_model.fit(X_meta, y_meta)
+        # Fit the best model on all training data
+        best_model.fit(X_meta, y_meta)
+        self.meta_model = best_model
         print("Meta-model fitted successfully")
     
-    def predict(self, texts, max_length=64, openai_cache_file="openai_embeddings_cache.json"):
+    def predict(self, texts, max_length=64, openai_cache_file="openai_embeddings_cache.json", use_rank=False, soft_clip_margin=0.1):
         """
-        Make predictions with the ensemble.
+        Make predictions using the ensemble model.
         
         Args:
             texts: List of text samples
             max_length: Max sequence length for tokenizers
             openai_cache_file: File to cache OpenAI embeddings
+            use_rank: Whether to use percentile rank scaling before combining predictions
+            soft_clip_margin: Margin for soft clipping (set to None to disable)
             
         Returns:
-            Numpy array of predictions
+            numpy array of predictions
         """
+        print("Making predictions on test set...")
         all_predictions = []
         
         # Get predictions from transformer models
         for i, (model, tokenizer) in enumerate(zip(self.models, self.tokenizers)):
             print(f"Getting predictions from model {i+1}/{len(self.models)}")
-            # Use the optimized prediction method
             predictions = self.get_model_predictions(model, tokenizer, texts, max_length)
             all_predictions.append(predictions)
-        
+            
         # For weighted average ensemble
         if self.ensemble_type == "weighted_average":
-            # First, normalize each model's predictions to [0,1] range
-            normalized_predictions = []
-            for preds in all_predictions:
-                # Calculate min/max for each model's predictions
-                preds_array = np.array(preds)
-                preds_min = np.min(preds_array)
-                preds_max = np.max(preds_array)
+            # Apply rank transformation if requested
+            if use_rank:
+                ranked_predictions = [percentile_rank(preds) for preds in all_predictions]
+                all_predictions = ranked_predictions
                 
-                # Handle the case where all predictions are the same
-                if preds_max == preds_min:
-                    normalized_predictions.append(preds_array)
-                else:
-                    # Normalize to [0,1]
-                    norm_preds = (preds_array - preds_min) / (preds_max - preds_min)
-                    normalized_predictions.append(norm_preds)
-            
-            # Combine normalized predictions using weighted average
-            ensemble_preds = np.zeros(len(texts))
-            for i, norm_preds in enumerate(normalized_predictions):
-                ensemble_preds += norm_preds * self.weights[i]
-            
-            # Apply softer clipping - use sigmoid-like function to compress extremes
-            # but retain more gradation near the limits
-            def soft_clip(x, margin=0.1):
-                """Soft clipping function that preserves more detail at extremes"""
-                # Apply sigmoid-like compression at the extremes
-                lower_mask = x < margin
-                upper_mask = x > (1.0 - margin)
+            # Weighted average of all model predictions
+            predictions = np.zeros(len(texts))
+            for i, preds in enumerate(all_predictions):
+                predictions += self.weights[i] * np.array(preds)
                 
-                # Keep middle values unchanged
-                result = x.copy()
+            # Apply soft clipping if margin is provided
+            if soft_clip_margin is not None:
+                def soft_clip(x, margin=soft_clip_margin):
+                    """Soft clip to [0, 1] range with specified margin"""
+                    return 1 / (1 + np.exp(-(np.log(margin) / margin) * (x - 0.5) * 12))
                 
-                # Apply soft transformation for values below margin
-                if np.any(lower_mask):
-                    result[lower_mask] = margin * np.exp(
-                        (x[lower_mask] - margin) / margin
-                    )
+                predictions = soft_clip(predictions)
                 
-                # Apply soft transformation for values above (1-margin)
-                if np.any(upper_mask):
-                    result[upper_mask] = 1.0 - margin * np.exp(
-                        ((1.0 - margin) - x[upper_mask]) / margin
-                    )
-                
-                return result
-            
-            # Apply soft clipping instead of hard clipping
-            ensemble_preds = soft_clip(ensemble_preds, margin=0.05)
-            
-            return ensemble_preds
+            return predictions
         
         # For stacking ensemble
         elif self.ensemble_type == "stacking":
-            # Create feature matrix from transformer predictions only
+            # Prepare features for meta-model prediction
             X_meta = np.column_stack(all_predictions)
-            print(f"Using transformer predictions only. Feature matrix shape: {X_meta.shape}")
+            base_shape = X_meta.shape
             
-            # Check if we need to retrain a simplified meta-model for transformer-only predictions
-            if hasattr(self, 'meta_model_simple'):
-                # Use the simplified model
-                meta_preds = self.meta_model_simple.predict(X_meta)
-            elif self.use_openai == False:
-                # Directly use the meta-model with transformer features only
-                try:
-                    meta_preds = self.meta_model.predict(X_meta)
-                except ValueError as e:
-                    # If the meta model was trained with OpenAI features but we're running without them,
-                    # we need to train a simplified model using the original model's predictions
-                    print(f"Error: {e}")
-                    print("Creating a simplified meta-model for transformer-only predictions")
-                    
-                    from sklearn.linear_model import Ridge
-                    
-                    # Create a simple meta-model that maps from transformer predictions to final predictions
-                    # Generate synthetic data based on the original meta-model's behavior
-                    # Start with a range of inputs spanning the likely prediction space
-                    n_models = len(all_predictions)
-                    n_samples = 1000
-                    
-                    # Create synthetic input data covering the prediction space
-                    np.random.seed(42)
-                    synthetic_inputs = np.random.rand(n_samples, n_models) 
-                    
-                    # If we have the original meta-model, use it to generate target outputs
-                    # Otherwise, fall back to a simple averaging model
-                    if hasattr(self, 'meta_model'):
-                        # Try to create expanded features matching what the original model expects
-                        try:
-                            # Create additional synthetic features (placeholders for OpenAI embeddings)
-                            missing_features = self.meta_model.coef_.shape[0] - n_models
-                            if missing_features > 0:
-                                expanded_inputs = np.hstack([
-                                    synthetic_inputs, 
-                                    np.zeros((n_samples, missing_features))
-                                ])
-                                synthetic_outputs = self.meta_model.predict(expanded_inputs)
-                            else:
-                                synthetic_outputs = self.meta_model.predict(synthetic_inputs)
-                        except:
-                            # If that fails, just use the average as target
-                            synthetic_outputs = np.mean(synthetic_inputs, axis=1)
-                    else:
-                        # Simple average as fallback
-                        synthetic_outputs = np.mean(synthetic_inputs, axis=1)
-                    
-                    # Train a simplified model
-                    self.meta_model_simple = Ridge(alpha=1.0)
-                    self.meta_model_simple.fit(synthetic_inputs, synthetic_outputs)
-                    
-                    # Use the simplified model for prediction
-                    meta_preds = self.meta_model_simple.predict(X_meta)
-                except Exception as e:
-                    # If OpenAI embeddings failed, fall back to the approach above
-                    print(f"Error processing OpenAI embeddings: {e}")
-                    print("Falling back to transformer predictions only - creating simplified model")
-                    
-                    from sklearn.linear_model import Ridge
-                    
-                    # Create a simple meta-model that maps from transformer predictions to final predictions
-                    n_models = len(all_predictions)
-                    n_samples = 1000
-                    
-                    # Create synthetic input data covering the prediction space
-                    np.random.seed(42)
-                    synthetic_inputs = np.random.rand(n_samples, n_models)
-                    
-                    # Use simple average as target
-                    synthetic_outputs = np.mean(synthetic_inputs, axis=1)
-                    
-                    # Train a simplified model
-                    self.meta_model_simple = Ridge(alpha=1.0)
-                    self.meta_model_simple.fit(synthetic_inputs, synthetic_outputs)
-                    
-                    # Use the simplified model for prediction
-                    meta_preds = self.meta_model_simple.predict(X_meta)
+            # Add text features
+            text_features = np.array([self.extract_text_features(text) for text in texts])
+            X_meta = np.hstack([X_meta, text_features])
+            
+            # Add OpenAI embeddings if needed
+            if self.use_openai:
+                print("Getting OpenAI embeddings...")
+                openai_embeddings = batch_get_embeddings(
+                    texts, cache_file=openai_cache_file
+                )
+                
+                # Process OpenAI embeddings the same way as in training
+                openai_features = np.array(openai_embeddings)
+                
+                # Apply the same transformations as during training
+                openai_scaled = self.scaler.transform(openai_features)
+                emb_pca = self.pca.transform(openai_scaled)
+                
+                # Combine with transformer predictions
+                initial_features = np.column_stack([np.column_stack(all_predictions), emb_pca])
+                
+                # Apply feature selection
+                X_meta = self.feature_selector.transform(initial_features)
+                
+                print(f"Feature matrix shape: {X_meta.shape}")
             else:
-                # We were supposed to use OpenAI embeddings - try to get them
-                try:
-                    print("Getting OpenAI embeddings...")
-                    from viral_titles.utils.openai_embeddings import batch_get_embeddings
-                    
-                    openai_embeddings = batch_get_embeddings(
-                        texts, cache_file=openai_cache_file
-                    )
-                    
-                    # Apply the same feature transformation as in training
-                    openai_features = np.array(openai_embeddings)
-                    
-                    # Apply the same preprocessing and dimensionality reduction
-                    openai_scaled = self.scaler.transform(openai_features)
-                    emb_reduced = self.pca.transform(openai_scaled)
-                    
-                    # Concatenate with transformer predictions
-                    initial_features = np.column_stack([np.column_stack(all_predictions), emb_reduced])
-                    
-                    # Apply the same feature selection
-                    if hasattr(self, 'feature_selector'):
-                        X_meta = self.feature_selector.transform(initial_features)
-                    else:
-                        X_meta = initial_features
-                        
-                    print(f"Feature matrix shape: {X_meta.shape}")
-                    
-                    # Make predictions with meta-model
-                    meta_preds = self.meta_model.predict(X_meta)
-                except Exception as e:
-                    # If OpenAI embeddings failed, fall back to the approach above
-                    print(f"Error processing OpenAI embeddings: {e}")
-                    print("Falling back to transformer predictions only - creating simplified model")
-                    
-                    from sklearn.linear_model import Ridge
-                    
-                    # Create a simple meta-model that maps from transformer predictions to final predictions
-                    n_models = len(all_predictions)
-                    n_samples = 1000
-                    
-                    # Create synthetic input data covering the prediction space
-                    np.random.seed(42)
-                    synthetic_inputs = np.random.rand(n_samples, n_models)
-                    
-                    # Use simple average as target
-                    synthetic_outputs = np.mean(synthetic_inputs, axis=1)
-                    
-                    # Train a simplified model
-                    self.meta_model_simple = Ridge(alpha=1.0)
-                    self.meta_model_simple.fit(synthetic_inputs, synthetic_outputs)
-                    
-                    # Use the simplified model for prediction
-                    meta_preds = self.meta_model_simple.predict(X_meta)
+                # If not using OpenAI, just use the transformer predictions
+                print(f"Using transformer predictions only. Feature matrix shape: {base_shape}")
             
-            # Denormalize predictions if label stats available
-            if self.label_stats:
+            # Apply the meta-model
+            predictions = self.meta_model.predict(X_meta)
+            
+            # Denormalize predictions
+            if self.label_stats is not None:
                 label_mean, label_std = self.label_stats
-                meta_preds = meta_preds * label_std + label_mean
-            
-            # Apply soft clipping to ensure values are within [0, 1] but preserve more detail
-            def soft_clip(x, margin=0.1):
-                """Soft clipping function that preserves more detail at extremes"""
-                # Apply sigmoid-like compression at the extremes
-                lower_mask = x < 0
-                upper_mask = x > 1.0
-                mid_lower_mask = (x >= 0) & (x < margin)
-                mid_upper_mask = (x <= 1.0) & (x > (1.0 - margin))
+                predictions = predictions * label_std + label_mean
                 
-                # Keep middle values unchanged
-                result = x.copy()
+            # Apply soft clipping if margin is provided
+            if soft_clip_margin is not None:
+                def soft_clip(x, margin=soft_clip_margin):
+                    """Soft clip to [0, 1] range with specified margin"""
+                    return 1 / (1 + np.exp(-(np.log(margin) / margin) * (x - 0.5) * 12))
                 
-                # Hard clip severe outliers (less than 0 or greater than 1)
-                if np.any(lower_mask):
-                    result[lower_mask] = 0
-                if np.any(upper_mask):
-                    result[upper_mask] = 1.0
+                predictions = soft_clip(predictions)
                 
-                # Apply soft transformation for borderline values
-                if np.any(mid_lower_mask):
-                    result[mid_lower_mask] = margin * (x[mid_lower_mask] / margin) ** 2
-                
-                if np.any(mid_upper_mask):
-                    overflow = x[mid_upper_mask] - (1.0 - margin)
-                    result[mid_upper_mask] = (1.0 - margin) + margin * (1 - (1 - overflow/margin) ** 2)
-                
-                return result
-            
-            # Apply soft clipping
-            meta_preds = soft_clip(meta_preds, margin=0.05)
-            
-            return meta_preds
+            return predictions
     
     def save(self, path):
-        """Save the ensemble model configuration"""
+        """
+        Save the ensemble model to disk.
+        
+        Args:
+            path: Path to save the model
+        """
         import pickle
         
+        # Prepare the config to save
         config = {
             "ensemble_type": self.ensemble_type,
-            "use_openai": self.use_openai,
             "weights": self.weights,
             "label_stats": self.label_stats,
-            "meta_model": self.meta_model if self.meta_model else None,
+            "meta_model": self.meta_model,
+            "use_openai": self.use_openai
         }
         
-        # Add scaler, pca and feature_selector if they exist
-        if hasattr(self, 'scaler'):
-            config["scaler"] = self.scaler
+        # Save additional attributes if they exist
+        if hasattr(self, "feature_selector"):
+            config["feature_selector"] = self.feature_selector
             
-        if hasattr(self, 'pca'):
+        if hasattr(self, "pca"):
             config["pca"] = self.pca
             
-        if hasattr(self, 'feature_selector'):
-            config["feature_selector"] = self.feature_selector
+        if hasattr(self, "scaler"):
+            config["scaler"] = self.scaler
         
-        with open(path, "wb") as f:
+        # Save the config
+        with open(path, 'wb') as f:
             pickle.dump(config, f)
         
         print(f"Ensemble configuration saved to {path}")
