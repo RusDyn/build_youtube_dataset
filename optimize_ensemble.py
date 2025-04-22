@@ -28,7 +28,7 @@ def run_step(step_number, args):
             "python", "train_viral_ensemble.py",
             "--ensemble_type", "stacking",
             "--model_paths"
-        ] + args.model_paths + ["--dataset", "hf_dataset"]
+        ] + args.model_paths + ["--dataset", args.dataset]
         
         # Add any additional args
         if args.rank_average:
@@ -54,7 +54,7 @@ def run_step(step_number, args):
             "--ensemble_type", "weighted_average",
             "--rank_average",
             "--model_paths"
-        ] + args.model_paths + ["--dataset", "hf_dataset"]
+        ] + args.model_paths + ["--dataset", args.dataset]
         
         # Add holdout split for weight optimization
         cmd.extend(["--holdout_split", str(args.holdout_split)])
@@ -99,7 +99,7 @@ def run_step(step_number, args):
             "--optimize_blend",
             "--holdout_split", str(args.holdout_split),
             "--model_paths"
-        ] + args.model_paths + ["--dataset", "hf_dataset"]
+        ] + args.model_paths + ["--dataset", args.dataset]
         
         print(f"Running command: {' '.join(cmd)}")
         subprocess.run(cmd)
@@ -127,6 +127,8 @@ def main():
                         help="Proportion of training data to use for weight optimization")
     parser.add_argument("--rank_average", action="store_true",
                         help="Use rank-based averaging in the stacking ensemble")
+    parser.add_argument("--dataset", type=str, default="hf_dataset",
+                        help="Dataset path to use")
     
     args = parser.parse_args()
     
