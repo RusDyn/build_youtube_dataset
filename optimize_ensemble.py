@@ -28,7 +28,11 @@ def run_step(step_number, args):
             "python", "train_viral_ensemble.py",
             "--ensemble_type", "stacking",
             "--model_paths"
-        ] + args.model_paths + ["--dataset", args.dataset, "--score_field", args.score_field]
+        ] + args.model_paths + [
+            "--dataset", args.dataset,
+            "--score_field", args.score_field,
+            "--soft_clip_margin", "0"
+        ]
         
         # Add any additional args
         if args.rank_average:
@@ -54,7 +58,11 @@ def run_step(step_number, args):
             "--ensemble_type", "weighted_average",
             "--rank_average",
             "--model_paths"
-        ] + args.model_paths + ["--dataset", args.dataset, "--score_field", args.score_field]
+        ] + args.model_paths + [
+            "--dataset", args.dataset,
+            "--score_field", args.score_field,
+            "--soft_clip_margin", "0"
+        ]
         
         # Add holdout split for weight optimization
         cmd.extend(["--holdout_split", str(args.holdout_split)])

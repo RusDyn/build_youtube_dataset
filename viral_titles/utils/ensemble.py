@@ -185,19 +185,17 @@ class EnsembleViralPredictor:
                 
             all_predictions.append(predictions)
         
-        # Extract text features for all texts
-        print("Extracting text features...")
-        text_features = np.array([self.extract_text_features(text) for text in texts])
-        print(f"Extracted text features with shape: {text_features.shape}")
-        
-        # Prepare features for meta-model
+        # Prepare features for meta-model (base model predictions)
         X_meta = np.column_stack(all_predictions)
         
-        # Add text features to meta-model input
-        X_meta = np.hstack([X_meta, text_features])
-        
-        # Get OpenAI embeddings if needed
         if self.use_openai:
+            # Extract text features and include in meta-model input
+            print("Extracting text features...")
+            text_features = np.array([self.extract_text_features(text) for text in texts])
+            print(f"Extracted text features with shape: {text_features.shape}")
+            X_meta = np.hstack([X_meta, text_features])
+            
+            # Get OpenAI embeddings if needed
             print("Getting OpenAI embeddings...")
             openai_embeddings = batch_get_embeddings(
                 texts, cache_file=openai_cache_file
@@ -255,14 +253,16 @@ class EnsembleViralPredictor:
             X_meta = selected_features
             
             print(f"Selected {selected_features.shape[1]} features out of {initial_features.shape[1]}")
-        
-        # Store label statistics for later use in prediction
-        label_mean = np.mean(labels)
-        label_std = np.std(labels)
-        self.label_stats = (label_mean, label_std)
-        
-        # Normalize labels for training
-        y_meta = (np.array(labels) - label_mean) / label_std
+        else:
+            # Without OpenAI and without text features, X_meta remains only base predictions
+            
+            # Store label statistics for later use in prediction
+            label_mean = np.mean(labels)
+            label_std = np.std(labels)
+            self.label_stats = (label_mean, label_std)
+            
+            # Normalize labels for training
+            y_meta = (np.array(labels) - label_mean) / label_std
             
         print(f"Meta-model input shape: {X_meta.shape}")
         
@@ -337,7 +337,7 @@ class EnsembleViralPredictor:
                 predictions += self.weights[i] * np.array(preds)
                 
             # Apply soft clipping if margin is provided
-            if soft_clip_margin is not None:
+            if soft_clip_margin is not None and soft_clip_margin > 0:
                 def soft_clip(x, margin=soft_clip_margin):
                     """Soft clip to [0, 1] range with specified margin"""
                     return 1 / (1 + np.exp(-(np.log(margin) / margin) * (x - 0.5) * 12))
@@ -390,7 +390,7 @@ class EnsembleViralPredictor:
                 predictions = predictions * label_std + label_mean
                 
             # Apply soft clipping if margin is provided
-            if soft_clip_margin is not None:
+            if soft_clip_margin is not None and soft_clip_margin > 0:
                 def soft_clip(x, margin=soft_clip_margin):
                     """Soft clip to [0, 1] range with specified margin"""
                     return 1 / (1 + np.exp(-(np.log(margin) / margin) * (x - 0.5) * 12))

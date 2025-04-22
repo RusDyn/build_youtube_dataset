@@ -45,9 +45,9 @@ def main():
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for reproducibility")
     parser.add_argument("--rank_average", action="store_true",
-                        help="Use rank-based averaging in the ensemble")
+                        help="Use rank-based scaling for model predictions")
     parser.add_argument("--soft_clip_margin", type=float, default=0.1,
-                        help="Margin for soft clipping (set to 0 to disable)")
+                        help="Margin for soft clipping (0 to disable)")
     parser.add_argument("--holdout_split", type=float, default=0.1,
                         help="Percentage of training data to use for weight optimization (if ensemble_type=weighted_average)")
     
