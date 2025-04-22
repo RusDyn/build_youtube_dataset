@@ -48,6 +48,8 @@ def main():
     parser = argparse.ArgumentParser(description="Train final ensemble for viral YouTube titles")
     parser.add_argument("--dataset", type=str, default="hf_dataset_reg_improved",
                         help="Dataset path to use")
+    parser.add_argument("--score_field", type=str, default="viral_score", 
+                        help="Field name containing the target score in the dataset")
     parser.add_argument("--weighted_model", type=str, default="ensemble_title_weighted_average_model.pkl",
                         help="Path to the weighted average model")
     parser.add_argument("--stacking_model", type=str, default="ensemble_title_stacking_model.pkl",
@@ -79,7 +81,7 @@ def main():
     
     # Extract test data
     test_texts = [str(ex["title"]) for ex in dsd["test"]]
-    test_labels = [float(ex["viral_score"]) for ex in dsd["test"]]
+    test_labels = [float(ex[args.score_field]) for ex in dsd["test"]]
     
     # Create model configs (needed for loading ensembles)
     model_configs = []

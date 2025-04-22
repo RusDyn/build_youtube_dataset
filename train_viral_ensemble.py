@@ -40,6 +40,8 @@ def main():
     parser.add_argument("--target", type=str, default="title",
                         choices=["title", "description"],
                         help="Target field to predict from")
+    parser.add_argument("--score_field", type=str, default="viral_score",
+                        help="Field name containing the target score in the dataset")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for reproducibility")
     parser.add_argument("--rank_average", action="store_true",
@@ -71,11 +73,15 @@ def main():
     print(f"Loading dataset from {args.dataset}")
     dsd = DatasetDict.load_from_disk(args.dataset)
     
+    # Debug: Print available fields in the first example
+    print("Available fields in the first training example:")
+    print(list(dsd["train"][0].keys()))
+    
     # Extract text and labels
     train_texts = [str(ex[args.target]) for ex in dsd["train"]]
-    train_labels = [float(ex["viral_score"]) for ex in dsd["train"]]
+    train_labels = [float(ex[args.score_field]) for ex in dsd["train"]]
     test_texts = [str(ex[args.target]) for ex in dsd["test"]]
-    test_labels = [float(ex["viral_score"]) for ex in dsd["test"]]
+    test_labels = [float(ex[args.score_field]) for ex in dsd["test"]]
     
     print(f"Loaded {len(train_texts)} training examples and {len(test_texts)} test examples")
     
