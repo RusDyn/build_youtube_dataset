@@ -48,7 +48,7 @@ def main():
     parser = argparse.ArgumentParser(description="Train final ensemble for viral YouTube titles")
     parser.add_argument("--dataset", type=str, default="hf_dataset_reg_improved",
                         help="Dataset path to use")
-    parser.add_argument("--score_field", type=str, default="viral_score", 
+    parser.add_argument("--score_field", type=str, default="score", 
                         help="Field name containing the target score in the dataset")
     parser.add_argument("--weighted_model", type=str, default="ensemble_title_weighted_average_model.pkl",
                         help="Path to the weighted average model")
