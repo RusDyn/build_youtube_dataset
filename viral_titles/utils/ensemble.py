@@ -352,12 +352,12 @@ class EnsembleViralPredictor:
             X_meta = np.column_stack(all_predictions)
             base_shape = X_meta.shape
             
-            # Add text features
-            text_features = np.array([self.extract_text_features(text) for text in texts])
-            X_meta = np.hstack([X_meta, text_features])
-            
-            # Add OpenAI embeddings if needed
             if self.use_openai:
+                # Include text features when using OpenAI embeddings
+                print("Extracting text features...")
+                text_features = np.array([self.extract_text_features(text) for text in texts])
+                X_meta = np.hstack([X_meta, text_features])
+                # Add OpenAI embeddings
                 print("Getting OpenAI embeddings...")
                 openai_embeddings = batch_get_embeddings(
                     texts, cache_file=openai_cache_file
@@ -378,7 +378,7 @@ class EnsembleViralPredictor:
                 
                 print(f"Feature matrix shape: {X_meta.shape}")
             else:
-                # If not using OpenAI, just use the transformer predictions
+                # Without OpenAI embeddings, use transformer predictions only
                 print(f"Using transformer predictions only. Feature matrix shape: {base_shape}")
             
             # Apply the meta-model
