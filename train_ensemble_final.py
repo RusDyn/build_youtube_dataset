@@ -192,6 +192,8 @@ def main():
         print("Applying percentile ranking to predictions for consistent scaling")
         weighted_preds = percentile_rank(weighted_preds)
         stacking_preds = percentile_rank(stacking_preds)
+    else:
+        print("Skipping second percentile ranking (--rank_average already applied)")
     
     # Debug: Print prediction statistics after possible ranking
     print("\nDebug - Prediction statistics after ranking step:")

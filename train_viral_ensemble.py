@@ -161,7 +161,66 @@ def main():
                         best_spearman = spearman
                         best_weights = weights
             else:
-                print("Weight optimization for >2 models not implemented, using equal weights")
+                print("Performing grid search for >2 models using simplex sampling...")
+                
+                # Set number of grid points based on number of models
+                # More models → use fewer points per dimension to keep total manageable
+                points_per_dim = max(5, min(11, int(100 / len(args.model_paths))))
+                num_samples = points_per_dim * len(args.model_paths) * 2
+                print(f"Using {num_samples} sample points across the weight simplex")
+                
+                # Generate weight combinations to sample across the simplex
+                # Each row is a weight vector that sums to 1
+                import itertools
+                
+                # First, use some fixed weight distributions (including uniform)
+                weight_vectors = [
+                    # Equal weights
+                    [1.0/len(args.model_paths)] * len(args.model_paths) 
+                ]
+                
+                # Add vertices (each model alone gets weight 1)
+                for i in range(len(args.model_paths)):
+                    w = [0.0] * len(args.model_paths)
+                    w[i] = 1.0
+                    weight_vectors.append(w)
+                
+                # Add edge midpoints (pairs of models with equal weight)
+                for i, j in itertools.combinations(range(len(args.model_paths)), 2):
+                    w = [0.0] * len(args.model_paths)
+                    w[i] = 0.5
+                    w[j] = 0.5
+                    weight_vectors.append(w)
+                
+                # Generate additional random points inside the simplex
+                remaining_samples = num_samples - len(weight_vectors)
+                if remaining_samples > 0:
+                    for _ in range(remaining_samples):
+                        # Generate random weights that sum to 1
+                        w = np.random.dirichlet(alpha=[1.0] * len(args.model_paths))
+                        weight_vectors.append(w)
+                
+                # Evaluate each weight vector
+                for weights in weight_vectors:
+                    # Compute weighted predictions
+                    weighted_preds = np.zeros(len(holdout_labels))
+                    for j, preds in enumerate(model_predictions):
+                        weighted_preds += weights[j] * preds
+                    
+                    # Apply soft clipping if needed
+                    if args.soft_clip_margin > 0:
+                        weighted_preds = soft_clip(weighted_preds, margin=args.soft_clip_margin)
+                    
+                    # Calculate Spearman correlation
+                    spearman = spearmanr(holdout_labels, weighted_preds).correlation
+                    
+                    # Format weights for display
+                    weights_str = ", ".join([f"{w:.2f}" for w in weights])
+                    print(f"Weights: [{weights_str}], Spearman: {spearman:.4f}")
+                    
+                    if spearman > best_spearman:
+                        best_spearman = spearman
+                        best_weights = weights.copy()
             
             print(f"Best weights: {best_weights}, Spearman: {best_spearman:.4f}")
             args.model_weights = best_weights
