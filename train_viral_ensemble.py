@@ -229,7 +229,7 @@ def main():
     model_configs = []
     for i, path in enumerate(args.model_paths):
         weight = 1.0
-        if args.model_weights and i < len(args.model_weights):
+        if args.model_weights is not None and i < len(args.model_weights):
             weight = args.model_weights[i]
         
         model_configs.append({
