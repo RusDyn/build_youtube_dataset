@@ -96,21 +96,60 @@ def create_balanced_language_sampler(dataset):
     # Create and return the sampler
     return WeightedRandomSampler(weights, len(dataset))
 
+class LanguageAwareCollator:
+    """
+    Custom collator function that removes language field before creating tensors
+    """
+    def __init__(self, tokenizer):
+        self.tokenizer = tokenizer
+        
+    def __call__(self, examples):
+        # Save language info separately
+        languages = [example.pop("language") if "language" in example else "unknown" for example in examples]
+        
+        # Perform padding and create tensors
+        batch = self.tokenizer.pad(examples, return_tensors="pt", padding=True)
+        
+        # Put languages back but not as a tensor field
+        batch["language_metadata"] = languages
+        
+        return batch
+
 # Custom Dataset for language-balanced sampling
 class LanguageBalancedDataset(torch.utils.data.Dataset):
     def __init__(self, hf_dataset):
         self.dataset = hf_dataset
+        # Make a list of indices
+        self.indices = list(range(len(hf_dataset)))
         
     def __len__(self):
-        return len(self.dataset)
+        return len(self.indices)
     
     def __getitem__(self, idx):
-        return self.dataset[idx]
+        # Get the actual example
+        example = self.dataset[self.indices[idx]]
+        
+        # Return a dict that doesn't include language in tensors
+        result = {k: v for k, v in example.items() if k != "language"}
+        
+        # Add language field separately
+        if "language" in example:
+            result["language"] = example["language"]
+            
+        return result
 
 # Custom Trainer that uses language-balanced sampling
 class LanguageBalancedTrainer(Trainer):
     def __init__(self, language_sampler=None, *args, **kwargs):
         self.language_sampler = language_sampler
+        
+        # Extract tokenizer from kwargs
+        tokenizer = kwargs.pop("tokenizer", None)
+        
+        # Create custom collator
+        if tokenizer is not None:
+            kwargs["data_collator"] = LanguageAwareCollator(tokenizer)
+            
         super().__init__(*args, **kwargs)
     
     def get_train_dataloader(self):
@@ -231,12 +270,6 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
         for lang, count in sorted(lang_counts.items(), key=lambda x: x[1], reverse=True)[:10]:
             percentage = 100 * count / len(train_ds)
             print(f"  {lang}: {count:,} samples ({percentage:.2f}%)")
-        
-        # Create language sampler if using balanced sampling
-        language_sampler = None
-        if use_balanced_sampling:
-            print("Creating language-balanced sampler for training...")
-            # This will be added after tokenization
     
     # Standardize the labels (mean=0, std=1)
     train_labels = [ex["labels"] for ex in train_ds]
@@ -307,29 +340,33 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
             lang_to_group[lang] = group
     
     def preprocess_function(examples):
-        # Basic tokenization
-        tokenized = tok(examples["text"], padding="max_length", truncation=True, max_length=max_len)
+        # Store language info separately
+        languages = None
+        if "language" in examples:
+            languages = examples["language"]  # Save before tokenization
         
-        # If language features are enabled, add language information to input
-        if use_language_features and "language" in examples:
-            # Prepend language code as a special token at the start of the sequence
-            for i, lang in enumerate(examples["language"]):
+        # Basic tokenization (don't include language field in tokenization)
+        features = {}
+        for k, v in examples.items():
+            if k != "language":
+                features[k] = v
+        
+        tokenized = tok(features["text"], padding="max_length", truncation=True, max_length=max_len)
+        
+        # Add language info back to the features
+        if languages is not None:
+            tokenized["language"] = languages
+        
+        # If language features are enabled, modify input text to include language marker
+        if use_language_features and languages is not None:
+            # Add language group info to text - but don't modify tokenized ids
+            for i, lang in enumerate(languages):
                 # Get language group (default to "other" if not found)
                 lang_group = lang_to_group.get(lang, "other")
                 
-                # Add language group as prefix to input_ids and attention_mask
-                # This acts like a special token informing the model about the text language
-                lang_prefix = f"[{lang_group}]"
+                # Add language group as prefix to text (for displaying only)
+                examples["text"][i] = f"[{lang_group}] {examples['text'][i]}"
                 
-                # Add language info to beginning of text
-                if tokenized["input_ids"][i][0] != tok.cls_token_id:
-                    # For models without CLS token, just prepend text
-                    examples["text"][i] = f"{lang_prefix} {examples['text'][i]}"
-        
-        # Preserve language field if present for balanced sampling
-        if "language" in examples:
-            tokenized["language"] = examples["language"]
-            
         return tokenized
     
     # Tokenize the datasets
@@ -384,6 +421,19 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
     if use_spearman_metric:
         spearman_callback = SpearmanCallback(tokenized_test, tok)
         callbacks.append(spearman_callback)
+    
+    # Create a list of features that should not be converted to tensors
+    # to avoid the "Unable to create tensor" error
+    non_tensor_features = ["language"]
+    
+    # Filter out non-tensor features from datasets to avoid errors
+    def filter_non_tensor_features(dataset):
+        return dataset.remove_columns([col for col in non_tensor_features if col in dataset.column_names])
+    
+    # Apply filtering only for standard trainer that doesn't have custom collator
+    if not use_balanced_sampling:
+        tokenized_train = filter_non_tensor_features(tokenized_train)
+        tokenized_test = filter_non_tensor_features(tokenized_test)
     
     # Choose the appropriate trainer based on whether we're using language balancing
     if use_balanced_sampling:
@@ -508,13 +558,13 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
     sample_indices = random.sample(range(len(y_pred)), min(10, len(y_pred)))
     print("\nSample predictions (original scale):")
     for idx in sample_indices:
-        text = tokenized_test[idx]["text"]
+        text = tokenized_test[idx]["text"] if isinstance(tokenized_test[idx]["text"], str) else tokenized_test[idx]["text"][0]
         if len(text) > 50:
             text = text[:50] + "..."
         
         # Include language if available
         lang_info = ""
-        if (use_language_features or use_balanced_sampling) and "language" in test_ds[idx]:
+        if (use_language_features or use_balanced_sampling) and hasattr(test_ds[idx], "get") and "language" in test_ds[idx]:
             lang_info = f" [Lang: {test_ds[idx]['language']}]"
             
         print(f"Text: '{text}'{lang_info}")
