@@ -102,6 +102,8 @@ def main():
                         help='Use all enhancements (balanced dataset + pairwise loss + spearman metric)')
     parser.add_argument('--accumulation', type=int, default=4,
                         help='Gradient accumulation steps')
+    parser.add_argument('--use-language-features', action='store_true',
+                        help='Use language detection as additional features')
     
     args = parser.parse_args()
     
@@ -135,7 +137,8 @@ def main():
             use_spearman_metric=args.use_spearman,
             patience=args.patience,
             dataset_path=args.dataset,
-            gradient_accumulation_steps=args.accumulation
+            gradient_accumulation_steps=args.accumulation,
+            use_language_features=args.use_language_features
         )
     elif args.stage == "regression_description":
         stage_regression(
@@ -151,7 +154,8 @@ def main():
             use_spearman_metric=args.use_spearman,
             patience=args.patience,
             dataset_path=args.dataset,
-            gradient_accumulation_steps=args.accumulation
+            gradient_accumulation_steps=args.accumulation,
+            use_language_features=args.use_language_features
         )
     
     #elif args.stage == "sft":
@@ -178,7 +182,8 @@ def main():
             use_spearman_metric=args.use_spearman,
             patience=args.patience,
             dataset_path=args.dataset,
-            gradient_accumulation_steps=args.accumulation
+            gradient_accumulation_steps=args.accumulation,
+            use_language_features=args.use_language_features
         )
         stage_regression(
             target="description", 
@@ -193,7 +198,8 @@ def main():
             use_spearman_metric=args.use_spearman,
             patience=args.patience,
             dataset_path=args.dataset,
-            gradient_accumulation_steps=args.accumulation
+            gradient_accumulation_steps=args.accumulation,
+            use_language_features=args.use_language_features
         )
         #stage_sft(epochs=args.epochs, bs=args.bs)
         #stage_reward(epochs=args.epochs)

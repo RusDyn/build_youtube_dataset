@@ -13,6 +13,7 @@ from transformers import (
     Trainer, 
     TrainingArguments
 )
+from langdetect import detect, LangDetectException
 
 from ..utils import SpearmanCallback, analyze_viral_score_distribution, fix_biased_dataset
 from ..config import MAX_LEN_TITLE, MAX_LEN_DESC
@@ -32,7 +33,7 @@ def compute_loss(model, inputs, return_outputs=False, num_items_in_batch=None):
     logits = outputs.logits.view(-1)
     # PairwiseRankingLoss already handles batch sizes internally
     loss = pairwise_loss_fct(logits, labels)
-    return (loss, outputs) if return_outputs else loss 
+    return (loss, outputs) if return_outputs else loss
 
 def compute_metrics(eval_pred):
     """
@@ -52,10 +53,24 @@ def compute_metrics(eval_pred):
         "eval_spearman": spearman
     }
 
+def detect_language(text):
+    """
+    Detect language of the text and return the language code.
+    Returns 'en' for English or error cases as fallback.
+    """
+    try:
+        if not text or len(text.strip()) < 5:
+            return 'en'
+        lang = detect(text)
+        return lang
+    except LangDetectException:
+        return 'en'
+
 def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-transformers/all-mpnet-base-v2", 
                     lr=2e-5, scheduler_type="linear", weight_decay=0.01, warmup_ratio=0.1, 
                     use_pairwise=True, use_spearman_metric=True, patience=2,
-                    dataset_path="hf_dataset_reg", gradient_accumulation_steps=4):
+                    dataset_path="hf_dataset_reg", gradient_accumulation_steps=4,
+                    use_language_features=True):
     """
     Train a regression model to predict viral_score from title or description.
     
@@ -73,6 +88,7 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
         patience: Number of evaluation calls with no improvement after which training will be stopped (default: 2)
         dataset_path: Path to the dataset
         gradient_accumulation_steps: Number of steps to accumulate gradients before optimizer step (default: 4)
+        use_language_features: Whether to add language detection features (default: True)
     """
     print(f"▶️ Training regression model for: {target}")
     print(f"   Model: {model_ckpt}, Epochs: {epochs}, Batch size: {bs}")
@@ -81,6 +97,7 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
     print(f"   Gradient accumulation steps: {gradient_accumulation_steps}")
     print(f"   Using pairwise loss: {use_pairwise}")
     print(f"   Using Spearman metric for best model: {use_spearman_metric}")
+    print(f"   Using language detection features: {use_language_features}")
     print(f"   Early stopping patience: {patience}")
     print(f"   Using dataset path: {dataset_path}")
     
@@ -108,10 +125,32 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
         text = example[target]
         if not isinstance(text, str):
             text = str(text) if text is not None else ""
-        return {"text": text, "labels": float(example["viral_score"])}
+        
+        result = {"text": text, "labels": float(example["viral_score"])}
+        
+        # Add language detection if enabled
+        if use_language_features:
+            lang = detect_language(text)
+            result["language"] = lang
+            
+        return result
     
+    print("Preparing dataset with regression examples...")
     train_ds = dsd["train"].map(prepare_regression_example)
     test_ds = dsd["test"].map(prepare_regression_example)
+    
+    # If using language features, show language distribution
+    if use_language_features:
+        lang_counts = {}
+        for ex in train_ds:
+            lang = ex.get("language", "unknown")
+            lang_counts[lang] = lang_counts.get(lang, 0) + 1
+        
+        # Display language distribution
+        print("\nLanguage distribution in training data:")
+        for lang, count in sorted(lang_counts.items(), key=lambda x: x[1], reverse=True)[:10]:
+            percentage = 100 * count / len(train_ds)
+            print(f"  {lang}: {count:,} samples ({percentage:.2f}%)")
     
     # Standardize the labels (mean=0, std=1)
     train_labels = [ex["labels"] for ex in train_ds]
@@ -121,7 +160,13 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
     print(f"Label statistics - Mean: {label_mean:.4f}, Std: {label_std:.4f}")
     
     def normalize_labels(example):
-        return {"labels": (example["labels"] - label_mean) / label_std, "text": example["text"]}
+        result = {"labels": (example["labels"] - label_mean) / label_std, "text": example["text"]}
+        
+        # Preserve language field if present
+        if "language" in example:
+            result["language"] = example["language"]
+            
+        return result
     
     # Apply normalization
     train_ds = train_ds.map(normalize_labels)
@@ -160,10 +205,45 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
     max_len = MAX_LEN_TITLE if target == "title" else MAX_LEN_DESC
     print(f"Using max_length={max_len} for {target}")
     
+    # Common language groups to add special tokens for
+    common_lang_groups = {
+        "slavic": ["ru", "uk", "be", "bg", "pl", "cs", "sk", "sr", "hr", "sl"],
+        "cjk": ["zh", "ja", "ko"],
+        "indic": ["hi", "bn", "te", "ta", "mr", "ml"],
+        "arabic": ["ar", "fa", "ur"],
+        "latin": ["en", "es", "fr", "pt", "it", "de", "nl"],
+    }
+    
+    # Create reverse mapping from language to group
+    lang_to_group = {}
+    for group, langs in common_lang_groups.items():
+        for lang in langs:
+            lang_to_group[lang] = group
+    
     def preprocess_function(examples):
-        return tok(examples["text"], padding="max_length", truncation=True, max_length=max_len)
+        # Basic tokenization
+        tokenized = tok(examples["text"], padding="max_length", truncation=True, max_length=max_len)
+        
+        # If language features are enabled, add language information to input
+        if use_language_features and "language" in examples:
+            # Prepend language code as a special token at the start of the sequence
+            for i, lang in enumerate(examples["language"]):
+                # Get language group (default to "other" if not found)
+                lang_group = lang_to_group.get(lang, "other")
+                
+                # Add language group as prefix to input_ids and attention_mask
+                # This acts like a special token informing the model about the text language
+                lang_prefix = f"[{lang_group}]"
+                
+                # Add language info to beginning of text
+                if tokenized["input_ids"][i][0] != tok.cls_token_id:
+                    # For models without CLS token, just prepend text
+                    examples["text"][i] = f"{lang_prefix} {examples['text'][i]}"
+        
+        return tokenized
     
     # Tokenize the datasets
+    print("Tokenizing datasets...")
     tokenized_train = train_ds.map(preprocess_function, batched=True)
     tokenized_test = test_ds.map(preprocess_function, batched=True)
     
@@ -273,6 +353,31 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
     print(f"Test MSE (original scale): {mse_denorm:.6f}")
     print(f"Spearman correlation: {spearman:.4f}")
     
+    # Language-specific analysis if language features enabled
+    if use_language_features:
+        # Analyze performance by language group
+        languages = [ex.get("language", "unknown") for ex in test_ds]
+        lang_groups = {}
+        
+        for idx, lang in enumerate(languages):
+            # Map to language group
+            group = lang_to_group.get(lang, "other")
+            if group not in lang_groups:
+                lang_groups[group] = {"true": [], "pred": []}
+            
+            lang_groups[group]["true"].append(y_true_denorm[idx])
+            lang_groups[group]["pred"].append(y_pred_denorm[idx])
+        
+        print("\nPerformance by language group:")
+        for group, data in lang_groups.items():
+            if len(data["true"]) < 10:  # Skip groups with too few samples
+                continue
+            
+            group_mse = mean_squared_error(data["true"], data["pred"])
+            group_spearman = spearmanr(data["true"], data["pred"]).correlation
+            
+            print(f"  {group}: {len(data['true'])} samples, MSE: {group_mse:.6f}, Spearman: {group_spearman:.4f}")
+    
     # Save some sample predictions
     sample_indices = random.sample(range(len(y_pred)), min(10, len(y_pred)))
     print("\nSample predictions (original scale):")
@@ -280,7 +385,13 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
         text = tokenized_test[idx]["text"]
         if len(text) > 50:
             text = text[:50] + "..."
-        print(f"Text: '{text}'")
+        
+        # Include language if available
+        lang_info = ""
+        if use_language_features and "language" in test_ds[idx]:
+            lang_info = f" [Lang: {test_ds[idx]['language']}]"
+            
+        print(f"Text: '{text}'{lang_info}")
         print(f"True: {y_true_denorm[idx]:.4f}, Pred: {y_pred_denorm[idx]:.4f}")
         print("-" * 40)
         
