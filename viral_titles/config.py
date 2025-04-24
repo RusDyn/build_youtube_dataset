@@ -19,8 +19,8 @@ S3_KEY = os.getenv("S3_KEY")
 
 # Text length limits
 MAX_LEN = 32
-MAX_LEN_TITLE = 64
-MAX_LEN_DESC = 256
+MAX_LEN_TITLE = 128
+MAX_LEN_DESC = 1024
 
 # CUDA/PyTorch configuration
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
