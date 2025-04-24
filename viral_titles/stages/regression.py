@@ -7,6 +7,8 @@ import random
 from sklearn.metrics import mean_squared_error
 from scipy.stats import spearmanr
 from datasets import DatasetDict
+from collections import Counter
+from torch.utils.data import WeightedRandomSampler, DataLoader
 from transformers import (
     AutoTokenizer, 
     AutoModelForSequenceClassification, 
@@ -66,11 +68,87 @@ def detect_language(text):
     except LangDetectException:
         return 'en'
 
+def create_balanced_language_sampler(dataset):
+    """
+    Creates a WeightedRandomSampler that balances samples across language groups.
+    This gives more weight to underrepresented languages to ensure balanced training.
+    
+    Args:
+        dataset: The dataset to sample from (must contain 'language' field)
+        
+    Returns:
+        WeightedRandomSampler: Sampler that can be used with DataLoader
+    """
+    # Count occurrences of each language
+    lang_counts = Counter([ex.get("language", "unknown") for ex in dataset])
+    
+    # Calculate weights - inverse to language frequency
+    # (rarer languages get higher weights)
+    weights = []
+    for ex in dataset:
+        lang = ex.get("language", "unknown")
+        count = lang_counts[lang]
+        # Weight is inversely proportional to frequency
+        # Add 1 to avoid division by zero
+        weight = 1.0 / (count + 1)
+        weights.append(weight)
+    
+    # Create and return the sampler
+    return WeightedRandomSampler(weights, len(dataset))
+
+# Custom Dataset for language-balanced sampling
+class LanguageBalancedDataset(torch.utils.data.Dataset):
+    def __init__(self, hf_dataset):
+        self.dataset = hf_dataset
+        
+    def __len__(self):
+        return len(self.dataset)
+    
+    def __getitem__(self, idx):
+        return self.dataset[idx]
+
+# Custom Trainer that uses language-balanced sampling
+class LanguageBalancedTrainer(Trainer):
+    def __init__(self, language_sampler=None, *args, **kwargs):
+        self.language_sampler = language_sampler
+        super().__init__(*args, **kwargs)
+    
+    def get_train_dataloader(self):
+        """
+        Override to use weighted sampling for language balancing
+        """
+        if self.train_dataset is None:
+            raise ValueError("Trainer: training requires a train_dataset.")
+        
+        train_dataset = self.train_dataset
+        if isinstance(train_dataset, torch.utils.data.IterableDataset):
+            return super().get_train_dataloader()
+            
+        # Create PyTorch Dataset
+        torch_dataset = LanguageBalancedDataset(train_dataset)
+        
+        # Use default DataLoader if no language sampler
+        if self.language_sampler is None:
+            return super().get_train_dataloader()
+        
+        # Create DataLoader with the language sampler
+        data_loader = DataLoader(
+            torch_dataset,
+            batch_size=self.args.train_batch_size,
+            sampler=self.language_sampler,
+            collate_fn=self.data_collator,
+            drop_last=self.args.dataloader_drop_last,
+            num_workers=self.args.dataloader_num_workers,
+            pin_memory=self.args.dataloader_pin_memory,
+        )
+        
+        return data_loader
+
 def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-transformers/all-mpnet-base-v2", 
                     lr=2e-5, scheduler_type="linear", weight_decay=0.01, warmup_ratio=0.1, 
                     use_pairwise=True, use_spearman_metric=True, patience=2,
                     dataset_path="hf_dataset_reg", gradient_accumulation_steps=4,
-                    use_language_features=True):
+                    use_language_features=True, use_balanced_sampling=True):
     """
     Train a regression model to predict viral_score from title or description.
     
@@ -89,6 +167,7 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
         dataset_path: Path to the dataset
         gradient_accumulation_steps: Number of steps to accumulate gradients before optimizer step (default: 4)
         use_language_features: Whether to add language detection features (default: True)
+        use_balanced_sampling: Whether to use language-balanced sampling (default: True)
     """
     print(f"▶️ Training regression model for: {target}")
     print(f"   Model: {model_ckpt}, Epochs: {epochs}, Batch size: {bs}")
@@ -98,6 +177,7 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
     print(f"   Using pairwise loss: {use_pairwise}")
     print(f"   Using Spearman metric for best model: {use_spearman_metric}")
     print(f"   Using language detection features: {use_language_features}")
+    print(f"   Using language-balanced sampling: {use_balanced_sampling}")
     print(f"   Early stopping patience: {patience}")
     print(f"   Using dataset path: {dataset_path}")
     
@@ -129,7 +209,7 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
         result = {"text": text, "labels": float(example["viral_score"])}
         
         # Add language detection if enabled
-        if use_language_features:
+        if use_language_features or use_balanced_sampling:
             lang = detect_language(text)
             result["language"] = lang
             
@@ -139,8 +219,8 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
     train_ds = dsd["train"].map(prepare_regression_example)
     test_ds = dsd["test"].map(prepare_regression_example)
     
-    # If using language features, show language distribution
-    if use_language_features:
+    # If using language features or balanced sampling, show language distribution
+    if use_language_features or use_balanced_sampling:
         lang_counts = {}
         for ex in train_ds:
             lang = ex.get("language", "unknown")
@@ -151,6 +231,12 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
         for lang, count in sorted(lang_counts.items(), key=lambda x: x[1], reverse=True)[:10]:
             percentage = 100 * count / len(train_ds)
             print(f"  {lang}: {count:,} samples ({percentage:.2f}%)")
+        
+        # Create language sampler if using balanced sampling
+        language_sampler = None
+        if use_balanced_sampling:
+            print("Creating language-balanced sampler for training...")
+            # This will be added after tokenization
     
     # Standardize the labels (mean=0, std=1)
     train_labels = [ex["labels"] for ex in train_ds]
@@ -240,12 +326,22 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
                     # For models without CLS token, just prepend text
                     examples["text"][i] = f"{lang_prefix} {examples['text'][i]}"
         
+        # Preserve language field if present for balanced sampling
+        if "language" in examples:
+            tokenized["language"] = examples["language"]
+            
         return tokenized
     
     # Tokenize the datasets
     print("Tokenizing datasets...")
     tokenized_train = train_ds.map(preprocess_function, batched=True)
     tokenized_test = test_ds.map(preprocess_function, batched=True)
+    
+    # Create language sampler for balanced training if enabled
+    language_sampler = None
+    if use_balanced_sampling:
+        language_sampler = create_balanced_language_sampler(tokenized_train)
+        print("Created language-balanced sampler for more diverse training")
     
     # Set up training arguments
     metric_for_best_model = "eval_loss"  # Default
@@ -289,31 +385,61 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
         spearman_callback = SpearmanCallback(tokenized_test, tok)
         callbacks.append(spearman_callback)
     
-    # Create custom compute_loss function for pairwise loss if needed
-    if use_pairwise:
-        # Create Trainer with pairwise loss
-        trainer = Trainer(
-            model=model,
-            args=training_args,
-            train_dataset=tokenized_train,
-            eval_dataset=tokenized_test,
-            processing_class=tok,
-            callbacks=callbacks,
-            compute_metrics=compute_metrics  # Add compute_metrics function
-        )
-        # Set compute_loss method directly on trainer instance
-        trainer.compute_loss = compute_loss
+    # Choose the appropriate trainer based on whether we're using language balancing
+    if use_balanced_sampling:
+        # Create custom trainer with language balancing
+        if use_pairwise:
+            # Create LanguageBalancedTrainer with pairwise loss
+            trainer = LanguageBalancedTrainer(
+                language_sampler=language_sampler,
+                model=model,
+                args=training_args,
+                train_dataset=tokenized_train,
+                eval_dataset=tokenized_test,
+                tokenizer=tok,
+                callbacks=callbacks,
+                compute_metrics=compute_metrics
+            )
+            # Set compute_loss method directly on trainer instance
+            trainer.compute_loss = compute_loss
+        else:
+            # Create standard LanguageBalancedTrainer
+            trainer = LanguageBalancedTrainer(
+                language_sampler=language_sampler,
+                model=model,
+                args=training_args,
+                train_dataset=tokenized_train,
+                eval_dataset=tokenized_test,
+                tokenizer=tok,
+                callbacks=callbacks,
+                compute_metrics=compute_metrics
+            )
     else:
-        # Create standard Trainer
-        trainer = Trainer(
-            model=model,
-            args=training_args,
-            train_dataset=tokenized_train,
-            eval_dataset=tokenized_test,
-            processing_class=tok,
-            callbacks=callbacks,
-            compute_metrics=compute_metrics  # Add compute_metrics function
-        )
+        # Use standard trainer
+        if use_pairwise:
+            # Create Trainer with pairwise loss
+            trainer = Trainer(
+                model=model,
+                args=training_args,
+                train_dataset=tokenized_train,
+                eval_dataset=tokenized_test,
+                tokenizer=tok,
+                callbacks=callbacks,
+                compute_metrics=compute_metrics
+            )
+            # Set compute_loss method directly on trainer instance
+            trainer.compute_loss = compute_loss
+        else:
+            # Create standard Trainer
+            trainer = Trainer(
+                model=model,
+                args=training_args,
+                train_dataset=tokenized_train,
+                eval_dataset=tokenized_test,
+                tokenizer=tok,
+                callbacks=callbacks,
+                compute_metrics=compute_metrics
+            )
     
     # Train the model
     trainer.train()
@@ -354,7 +480,7 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
     print(f"Spearman correlation: {spearman:.4f}")
     
     # Language-specific analysis if language features enabled
-    if use_language_features:
+    if use_language_features or use_balanced_sampling:
         # Analyze performance by language group
         languages = [ex.get("language", "unknown") for ex in test_ds]
         lang_groups = {}
@@ -388,7 +514,7 @@ def stage_regression(target="title", epochs=3, bs=32, model_ckpt="sentence-trans
         
         # Include language if available
         lang_info = ""
-        if use_language_features and "language" in test_ds[idx]:
+        if (use_language_features or use_balanced_sampling) and "language" in test_ds[idx]:
             lang_info = f" [Lang: {test_ds[idx]['language']}]"
             
         print(f"Text: '{text}'{lang_info}")

@@ -104,6 +104,8 @@ def main():
                         help='Gradient accumulation steps')
     parser.add_argument('--use-language-features', action='store_true',
                         help='Use language detection as additional features')
+    parser.add_argument('--use-balanced-sampling', action='store_true',
+                        help='Use language-balanced sampling for training')
     
     args = parser.parse_args()
     
@@ -114,6 +116,7 @@ def main():
     if args.enhanced:
         args.use_pairwise = True
         args.use_spearman = True
+        args.use_balanced_sampling = True
     
     print(f"Running stage: {args.stage}")
     
@@ -138,7 +141,8 @@ def main():
             patience=args.patience,
             dataset_path=args.dataset,
             gradient_accumulation_steps=args.accumulation,
-            use_language_features=args.use_language_features
+            use_language_features=args.use_language_features,
+            use_balanced_sampling=args.use_balanced_sampling
         )
     elif args.stage == "regression_description":
         stage_regression(
@@ -155,7 +159,8 @@ def main():
             patience=args.patience,
             dataset_path=args.dataset,
             gradient_accumulation_steps=args.accumulation,
-            use_language_features=args.use_language_features
+            use_language_features=args.use_language_features,
+            use_balanced_sampling=args.use_balanced_sampling
         )
     
     #elif args.stage == "sft":
@@ -183,7 +188,8 @@ def main():
             patience=args.patience,
             dataset_path=args.dataset,
             gradient_accumulation_steps=args.accumulation,
-            use_language_features=args.use_language_features
+            use_language_features=args.use_language_features,
+            use_balanced_sampling=args.use_balanced_sampling
         )
         stage_regression(
             target="description", 
@@ -199,7 +205,8 @@ def main():
             patience=args.patience,
             dataset_path=args.dataset,
             gradient_accumulation_steps=args.accumulation,
-            use_language_features=args.use_language_features
+            use_language_features=args.use_language_features,
+            use_balanced_sampling=args.use_balanced_sampling
         )
         #stage_sft(epochs=args.epochs, bs=args.bs)
         #stage_reward(epochs=args.epochs)
