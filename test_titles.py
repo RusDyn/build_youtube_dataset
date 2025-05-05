@@ -5,6 +5,7 @@ Test new YouTube titles using trained ensemble models.
 import argparse
 import pickle
 import numpy as np
+from scipy.stats import rankdata
 from viral_titles.utils.ensemble import EnsembleViralPredictor
 from viral_titles import configure_windows_console
 
@@ -35,6 +36,28 @@ def load_ensemble(path, models_config):
     
     return ensemble
 
+def percentile_rank(scores):
+    """Convert raw scores to percentiles (0-100 range)"""
+    # Convert to percentile ranks (0-1 range)
+    ranks = rankdata(scores, "average") / len(scores)
+    # Scale to 0-100 for easier interpretation
+    return ranks * 100
+
+def apply_sigmoid_scaling(scores, k=5):
+    """Apply sigmoid scaling to spread out scores more evenly"""
+    scores = np.array(scores)
+    # Normalize to 0-1 range first
+    min_score = scores.min()
+    max_score = scores.max()
+    if max_score > min_score:
+        normalized = (scores - min_score) / (max_score - min_score)
+    else:
+        normalized = np.zeros_like(scores)
+    
+    # Apply sigmoid transformation to spread out mid-range values
+    # k controls steepness - higher k gives more spread
+    return 1 / (1 + np.exp(-k * (normalized - 0.5)))
+
 def main():
     parser = argparse.ArgumentParser(description="Test new YouTube titles using trained ensemble models")
     parser.add_argument("--weighted_model", type=str, default="ensemble_title_weighted_average_model.pkl",
@@ -56,6 +79,12 @@ def main():
                         help="Margin for soft clipping (set to 0 to disable)")
     parser.add_argument("--use_only_weighted", action="store_true",
                         help="Use only the weighted average model (skip stacking)")
+    parser.add_argument("--show_raw_scores", action="store_true",
+                        help="Show raw prediction scores alongside percentiles")
+    parser.add_argument("--apply_sigmoid", action="store_true",
+                        help="Apply sigmoid scaling to spread out scores")
+    parser.add_argument("--sigmoid_k", type=float, default=5.0,
+                        help="Steepness parameter for sigmoid scaling")
     
     args = parser.parse_args()
     
@@ -98,6 +127,9 @@ def main():
             print("Falling back to weighted average model only.")
             final_preds = weighted_preds
     
+    # Store raw predictions before any post-processing
+    raw_preds = final_preds.copy()
+    
     # Apply soft clipping if needed
     if args.soft_clip_margin > 0:
         from viral_titles.utils.clipping import soft_clip
@@ -107,12 +139,36 @@ def main():
         # Ensure predictions are within range [0, 1]
         final_preds = np.clip(final_preds, 0, 1)
     
+    # Calculate percentile ranks
+    percentiles = percentile_rank(final_preds)
+    
+    # Apply sigmoid scaling if requested
+    if args.apply_sigmoid:
+        print(f"Applying sigmoid scaling with k={args.sigmoid_k}")
+        sigmoid_scores = apply_sigmoid_scaling(final_preds, k=args.sigmoid_k)
+    
     # Print results
     print("\nResults:")
     print("-" * 80)
-    for title, pred in zip(args.titles, final_preds):
+    
+    # Sort titles by score (descending)
+    indices = np.argsort(-final_preds)
+    
+    for idx in indices:
+        title = args.titles[idx]
+        percentile = percentiles[idx]
+        
         print(f"Title: {title}")
-        print(f"Predicted viral score: {pred:.4f}")
+        
+        if args.show_raw_scores:
+            print(f"Raw score: {raw_preds[idx]:.4f}")
+            
+        print(f"Predicted viral score: {final_preds[idx]:.4f}")
+        print(f"Percentile rank: {percentile:.1f}%")
+        
+        if args.apply_sigmoid:
+            print(f"Sigmoid-scaled score: {sigmoid_scores[idx]:.4f}")
+            
         print("-" * 80)
 
 if __name__ == "__main__":
