@@ -54,6 +54,8 @@ def main():
                         help="Use rank-based averaging for final predictions")
     parser.add_argument("--soft_clip_margin", type=float, default=0.1,
                         help="Margin for soft clipping (set to 0 to disable)")
+    parser.add_argument("--use_only_weighted", action="store_true",
+                        help="Use only the weighted average model (skip stacking)")
     
     args = parser.parse_args()
     
@@ -68,23 +70,33 @@ def main():
             "weight": 1.0
         })
     
-    # Load the ensemble models
+    # Load the weighted average model
     print(f"Loading weighted average model from {args.weighted_model}")
     weighted_ensemble = load_ensemble(args.weighted_model, model_configs)
     
-    print(f"Loading stacking model from {args.stacking_model}")
-    stacking_ensemble = load_ensemble(args.stacking_model, model_configs)
-    
-    # Get predictions from both models
+    # Get predictions from weighted average model
     print("Getting predictions from weighted average model...")
     weighted_preds = weighted_ensemble.predict(args.titles, use_rank=args.rank_average)
     
-    print("Getting predictions from stacking model...")
-    stacking_preds = stacking_ensemble.predict(args.titles, use_rank=args.rank_average)
-    
-    # Combine predictions with weights
-    final_preds = (args.weighted_weight * weighted_preds + 
-                   args.stacking_weight * stacking_preds)
+    if args.use_only_weighted:
+        # If only using weighted model, use its predictions directly
+        final_preds = weighted_preds
+    else:
+        try:
+            # Try to load and use stacking model
+            print(f"Loading stacking model from {args.stacking_model}")
+            stacking_ensemble = load_ensemble(args.stacking_model, model_configs)
+            
+            print("Getting predictions from stacking model...")
+            stacking_preds = stacking_ensemble.predict(args.titles, use_rank=args.rank_average)
+            
+            # Combine predictions with weights
+            final_preds = (args.weighted_weight * weighted_preds + 
+                          args.stacking_weight * stacking_preds)
+        except Exception as e:
+            print(f"\nWarning: Could not use stacking model: {str(e)}")
+            print("Falling back to weighted average model only.")
+            final_preds = weighted_preds
     
     # Apply soft clipping if needed
     if args.soft_clip_margin > 0:
